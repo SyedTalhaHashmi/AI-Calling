@@ -1,112 +1,84 @@
-# AI Phone Assistant MVP (Node.js)
+# AI Phone Assistant (Streaming)
 
-This project is a working prototype of an AI phone assistant:
+Low-latency AI phone assistant using **streaming** for natural conversations (~500–800 ms response time):
 
-- A caller dials a Twilio number
-- The server records caller speech
-- Deepgram transcribes audio to text
-- OpenAI generates a short conversational response
-- ElevenLabs converts the response to speech
-- Twilio plays the response to the caller
+- Caller dials a Twilio number
+- Twilio opens a **WebSocket** media stream to your server
+- Audio streams live: Twilio (μ-law 8kHz) ↔ Node.js ↔ **OpenAI Realtime API**
+- No recordings, no Deepgram, no ElevenLabs — Realtime API handles STT + AI + TTS
 - When the call ends, a full transcript is emailed
-
-This MVP prioritizes reliability and simplicity.
-
-## Project Overview
-
-The app is a single Node.js server with modular services and in-memory call state.
-Each call is tracked by `callSid` in a `Map`, so every call keeps separate conversation memory and transcript lines.
 
 ## System Architecture
 
-Caller  
--> Twilio Phone Number  
--> Twilio Webhook (`/incoming-call`)  
--> Node.js Server  
--> Deepgram (speech-to-text)  
--> OpenAI (chat completion)  
--> ElevenLabs (text-to-speech)  
--> Twilio plays generated audio  
--> Call ends  
--> Transcript emailed
+```
+Caller
+  → Twilio Phone Number
+  → Webhook POST /incoming-call (TwiML with Connect/Stream)
+  → Twilio WebSocket to wss://YOUR_URL/media-stream
+  → Node.js bridge
+  → OpenAI Realtime API (gpt-realtime)
+  → Audio streamed back to caller
+  → Call ends → Transcript emailed
+```
 
 ## Project Structure
 
 ```text
 .
+|-- handlers/
+|   `-- mediaStream.js       # Twilio ↔ OpenAI bridge
 |-- routes/
 |   `-- calls.js
 |-- services/
-|   |-- deepgram.js
+|   |-- audioConvert.js      # μ-law 8k ↔ PCM 24k
 |   |-- email.js
-|   |-- elevenlabs.js
-|   |-- openai.js
-|   `-- twilioMedia.js
 |-- utils/
 |   |-- callStore.js
 |   |-- config.js
 |   |-- logger.js
-|   `-- transcript.js
-|-- server/
-|   `-- audio/              # Generated TTS audio files (runtime)
+|   |-- transcript.js
 |-- .env.example
 |-- package.json
 |-- README.md
 `-- server.js
 ```
 
-## Call Flow (Conversation Loop)
+## Call Flow (Streaming)
 
 1. Twilio sends `POST /incoming-call`
-2. Server creates call session using `callSid`
-3. Server greets caller ("Hello, you are speaking with an AI assistant...")
-4. Twilio records caller speech and sends `POST /process-recording`
-5. Server downloads Twilio recording audio
-6. Deepgram transcribes audio
-7. If transcript is empty/error, server responds with fallback prompt
-8. Otherwise, transcript is added to call memory
-9. OpenAI generates short reply using conversation history
-10. ElevenLabs generates speech audio (`.mp3`)
-11. Twilio plays generated audio
-12. Loop repeats via another recording step until caller hangs up
-13. Twilio sends `POST /call-status` with terminal status
-14. Server formats transcript and emails it to `EMAIL_TO`
+2. Server returns TwiML: `<Connect><Stream url="wss://.../media-stream"/></Connect>`
+3. Twilio opens WebSocket to `/media-stream`
+4. Server connects to OpenAI Realtime API
+5. Caller speaks → Twilio sends μ-law 8kHz → Server converts to PCM 24kHz → OpenAI
+6. OpenAI Realtime responds with audio → Server converts to μ-law 8kHz → Twilio plays
+7. Conversation continues with ~500–800 ms latency
+8. Call ends → Twilio sends `POST /call-status` → Transcript emailed
 
 ## Requirements
 
-- Node.js latest LTS (Node 20+ recommended)
+- Node.js 18+ (20+ recommended)
 - Twilio account + phone number
-- Deepgram API key
-- OpenAI API key
-- ElevenLabs API key
-- Email transport:
-  - Option A: local sendmail available on machine
-  - Option B: SMTP settings (recommended for production-like usage)
+- OpenAI API key (for Realtime API)
+- Email transport (SMTP or sendmail)
 
 ## Environment Variables
 
-Copy `.env.example` to `.env` and set values:
+Copy `.env.example` to `.env`:
 
 ```bash
 TWILIO_ACCOUNT_SID=
 TWILIO_AUTH_TOKEN=
 TWILIO_PHONE_NUMBER=
 OPENAI_API_KEY=
-DEEPGRAM_API_KEY=
-ELEVENLABS_API_KEY=
 EMAIL_FROM=
 EMAIL_TO=
+PUBLIC_BASE_URL=             # e.g. https://calling.bizaffix.com (required for Stream URL)
 PORT=3000
 ```
 
-Optional (supported by code):
+Optional:
 
 ```bash
-PUBLIC_BASE_URL=              # e.g. https://xxxx.ngrok-free.app
-OPENAI_MODEL=gpt-4o-mini
-DEEPGRAM_MODEL=nova-2
-ELEVENLABS_VOICE_ID=EXAVITQu4vr4xnSDxMaL
-ELEVENLABS_MODEL_ID=eleven_turbo_v2_5
 SMTP_HOST=
 SMTP_PORT=587
 SMTP_USER=
@@ -175,7 +147,7 @@ Cloudflare Quick Tunnels do **not** show a "Visit Site" warning page, so Twilio 
 5. In Twilio Voice Configuration set:
    - **A call comes in:** `https://YOUR-CLOUDFLARE-URL/incoming-call` (POST)
    - **Call status changes:** `https://YOUR-CLOUDFLARE-URL/call-status` (POST)
-6. In `.env` set `PUBLIC_BASE_URL=https://YOUR-CLOUDFLARE-URL` and restart the server.
+6. In `.env` set `PUBLIC_BASE_URL=https://YOUR-CLOUDFLARE-URL` and restart the server. **Required:** Twilio needs this to build the WebSocket Stream URL (`wss://.../media-stream`).
 
 ### Option B: ngrok
 

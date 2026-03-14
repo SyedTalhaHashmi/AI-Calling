@@ -62,7 +62,6 @@ function createMediaStreamHandler({ callStore, logger, openaiApiKey }) {
               session: {
                 type: "realtime",
                 instructions: SYSTEM_PROMPT,
-                voice: "alloy",
                 turn_detection: {
                   type: "server_vad",
                   threshold: 0.5,
@@ -77,7 +76,6 @@ function createMediaStreamHandler({ callStore, logger, openaiApiKey }) {
             JSON.stringify({
               type: "response.create",
               response: {
-                modalities: ["audio"],
                 instructions: "Say exactly: Hello, you are speaking with an AI assistant. Ask me anything.",
               },
             })

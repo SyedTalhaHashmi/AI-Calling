@@ -13,6 +13,8 @@ function required(name) {
 const config = {
   port: Number(process.env.PORT || 3000),
   publicBaseUrl: process.env.PUBLIC_BASE_URL || "",
+  /** Seconds to wait before returning TwiML so caller hears 1–2 rings (natural pickup). */
+  ringDelaySeconds: Number(process.env.RING_DELAY_SECONDS || 5),
   twilio: {
     accountSid: required("TWILIO_ACCOUNT_SID"),
     authToken: required("TWILIO_AUTH_TOKEN"),

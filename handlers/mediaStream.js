@@ -8,6 +8,9 @@ const { SYSTEM_PROMPT } = require("../utils/callStore");
 
 const OPENAI_REALTIME_URL = "wss://api.openai.com/v1/realtime?model=gpt-realtime";
 
+// Short, clear, inviting greeting (first 5 seconds matter)
+const GREETING = "Hi! This is Buddy from BuddyCallAI. You can ask me anything. What's on your mind today?";
+
 function createMediaStreamHandler({ callStore, logger, openaiApiKey }) {
   return function handleMediaStream(twilioWs, req) {
     let callSid = null;
@@ -38,13 +41,8 @@ function createMediaStreamHandler({ callStore, logger, openaiApiKey }) {
         callSid = msg.start?.callSid || msg.callSid;
         streamSid = msg.start?.streamSid || msg.streamSid;
         callStore.getOrCreate(callSid);
-        callStore.addAssistantMessage(
-          callSid,
-          "Hello, you are speaking with an AI assistant. Ask me anything."
-        );
-        transcriptLines.push(
-          "AI: Hello, you are speaking with an AI assistant. Ask me anything."
-        );
+        callStore.addAssistantMessage(callSid, GREETING);
+        transcriptLines.push(`AI: ${GREETING}`);
         logger.info({ callSid, streamSid }, "Media stream started");
 
         // Connect to OpenAI Realtime
@@ -71,12 +69,12 @@ function createMediaStreamHandler({ callStore, logger, openaiApiKey }) {
               },
             })
           );
-          // Trigger initial greeting
+          // Trigger initial greeting (short, clear, inviting)
           openaiWs.send(
             JSON.stringify({
               type: "response.create",
               response: {
-                instructions: "Say exactly: Hello, you are speaking with an AI assistant. Ask me anything.",
+                instructions: `Say exactly: ${GREETING}`,
               },
             })
           );

@@ -40,6 +40,11 @@ function createCallRoutes({ logger, callStore, services, config }) {
 
     try {
       const streamUrl = getStreamUrl(req, config.publicBaseUrl);
+      const ringDelay = Math.max(0, Number(config.ringDelaySeconds) || 0);
+      if (ringDelay > 0) {
+        logger.info({ callSid, ringDelaySeconds: ringDelay }, "Ringing before connect");
+        await new Promise((r) => setTimeout(r, ringDelay * 1000));
+      }
       callStore.getOrCreate(callSid);
       logger.info(
         { callSid, from: req.body.From, to: req.body.To, streamUrl },

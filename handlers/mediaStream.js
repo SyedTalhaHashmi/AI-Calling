@@ -73,11 +73,6 @@ function createMediaStreamHandler({ callStore, logger, openaiApiKey, weatherServ
           const session = {
             type: "realtime",
             instructions: SYSTEM_PROMPT,
-            turn_detection: {
-              type: "server_vad",
-              threshold: 0.5,
-              silence_duration_ms: 700,
-            },
             input_audio_transcription: { model: "whisper-1" },
           };
           if (weatherService && weatherService.enabled) {

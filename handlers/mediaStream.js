@@ -11,7 +11,23 @@ const OPENAI_REALTIME_URL = "wss://api.openai.com/v1/realtime?model=gpt-realtime
 // Short, clear, inviting greeting (first 5 seconds matter)
 const GREETING = "Hi! This is Buddy from BuddyCallAI. You can ask me anything. What's on your mind today?";
 
-function createMediaStreamHandler({ callStore, logger, openaiApiKey }) {
+const WEATHER_TOOL = {
+  type: "function",
+  name: "get_weather",
+  description: "Get current weather for a city. Use when the user asks about weather, temperature, or conditions in a place.",
+  parameters: {
+    type: "object",
+    properties: {
+      city: {
+        type: "string",
+        description: "City name, e.g. London, New York, Paris",
+      },
+    },
+    required: ["city"],
+  },
+};
+
+function createMediaStreamHandler({ callStore, logger, openaiApiKey, weatherService }) {
   return function handleMediaStream(twilioWs, req) {
     let callSid = null;
     let streamSid = null;
@@ -54,20 +70,22 @@ function createMediaStreamHandler({ callStore, logger, openaiApiKey }) {
 
         openaiWs.on("open", () => {
           logger.info({ callSid }, "OpenAI Realtime connected");
+          const session = {
+            type: "realtime",
+            instructions: SYSTEM_PROMPT,
+            turn_detection: {
+              type: "server_vad",
+              threshold: 0.5,
+              silence_duration_ms: 700,
+            },
+            input_audio_transcription: { model: "whisper-1" },
+          };
+          if (weatherService && weatherService.enabled) {
+            session.tools = [WEATHER_TOOL];
+            session.tool_choice = "auto";
+          }
           openaiWs.send(
-            JSON.stringify({
-              type: "session.update",
-              session: {
-                type: "realtime",
-                instructions: SYSTEM_PROMPT,
-                turn_detection: {
-                  type: "server_vad",
-                  threshold: 0.5,
-                  silence_duration_ms: 700,
-                },
-                input_audio_transcription: { model: "whisper-1" },
-              },
-            })
+            JSON.stringify({ type: "session.update", session })
           );
           // Trigger initial greeting (short, clear, inviting)
           openaiWs.send(
@@ -121,6 +139,48 @@ function createMediaStreamHandler({ callStore, logger, openaiApiKey }) {
             transcriptLines.push(`AI: ${ev.transcript}`);
             callStore.addAssistantMessage(callSid, ev.transcript);
             logger.info({ callSid, reply: ev.transcript }, "AI said");
+          }
+
+          if (ev.type === "response.done" && weatherService?.enabled) {
+            const out = ev.response?.output?.[0];
+            if (out?.type === "function_call" && out.name === "get_weather" && out.call_id) {
+              let args = {};
+              try {
+                args = JSON.parse(out.arguments || "{}");
+              } catch (_) {}
+              const city = args.city || "unknown";
+              (async () => {
+                try {
+                  const result = await weatherService.getByCity(city);
+                  const output = JSON.stringify(result);
+                  openaiWs.send(
+                    JSON.stringify({
+                      type: "conversation.item.create",
+                      item: {
+                        type: "function_call_output",
+                        call_id: out.call_id,
+                        output,
+                      },
+                    })
+                  );
+                  openaiWs.send(JSON.stringify({ type: "response.create" }));
+                  logger.info({ callSid, city, result }, "Weather tool result");
+                } catch (err) {
+                  logger.error({ callSid, err: err.message }, "Weather tool failed");
+                  openaiWs.send(
+                    JSON.stringify({
+                      type: "conversation.item.create",
+                      item: {
+                        type: "function_call_output",
+                        call_id: out.call_id,
+                        output: JSON.stringify({ error: "Could not get weather." }),
+                      },
+                    })
+                  );
+                  openaiWs.send(JSON.stringify({ type: "response.create" }));
+                }
+              })();
+            }
           }
         });
 

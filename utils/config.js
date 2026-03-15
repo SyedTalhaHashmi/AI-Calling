@@ -23,6 +23,9 @@ const config = {
   openai: {
     apiKey: required("OPENAI_API_KEY"),
   },
+  openweather: {
+    apiKey: process.env.OPENWEATHER_API_KEY || "",
+  },
   email: {
     from: required("EMAIL_FROM"),
     to: required("EMAIL_TO"),

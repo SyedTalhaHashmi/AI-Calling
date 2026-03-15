@@ -70,6 +70,7 @@ TWILIO_ACCOUNT_SID=
 TWILIO_AUTH_TOKEN=
 TWILIO_PHONE_NUMBER=
 OPENAI_API_KEY=
+OPENWEATHER_API_KEY=
 EMAIL_FROM=
 EMAIL_TO=
 PUBLIC_BASE_URL=             # e.g. https://calling.bizaffix.com (required for Stream URL)
@@ -79,6 +80,7 @@ PORT=3000
 Optional:
 
 ```bash
+OPENWEATHER_API_KEY=    # For fast weather answers (OpenWeather API); omit to disable
 SMTP_HOST=
 SMTP_PORT=587
 SMTP_USER=
@@ -86,6 +88,9 @@ SMTP_PASS=
 SMTP_SECURE=false
 LOG_LEVEL=info
 ```
+
+- **Same language:** The AI is instructed to reply in the same language the caller uses (e.g. Spanish in, Spanish out).
+- **Weather:** If `OPENWEATHER_API_KEY` is set, the AI can use a weather tool for questions like “What’s the weather in London?” for faster, accurate answers.
 
 ## Setup Instructions
 

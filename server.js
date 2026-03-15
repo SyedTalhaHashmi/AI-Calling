@@ -6,6 +6,7 @@ const logger = require("./utils/logger");
 const { CallStore } = require("./utils/callStore");
 const createCallRoutes = require("./routes/calls");
 const createEmailService = require("./services/email");
+const createWeatherService = require("./services/weather");
 const createMediaStreamHandler = require("./handlers/mediaStream");
 
 function buildServer() {
@@ -43,10 +44,15 @@ function buildServer() {
 
   const server = http.createServer(app);
   const wss = new WebSocket.Server({ server, path: "/media-stream" });
+  const weatherService = createWeatherService(
+    config.openweather.apiKey,
+    logger
+  );
   const handleMediaStream = createMediaStreamHandler({
     callStore,
     logger,
     openaiApiKey: config.openai.apiKey,
+    weatherService,
   });
 
   wss.on("connection", (ws, req) => {

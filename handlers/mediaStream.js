@@ -175,7 +175,8 @@ function createMediaStreamHandler({ callStore, logger, openaiApiKey, weatherServ
               const text = content.transcript;
               transcriptLines.push(`Caller: ${text}`);
               callStore.addUserMessage(callSid, text);
-              logger.info({ callSid, transcript: text }, "User said");
+              const userLog = text.length > 100 ? text.slice(0, 100) + "…" : text;
+              logger.info({ callSid, transcript: text, role: "user" }, `USER: ${userLog}`);
 
               if (weatherService?.enabled && isWeatherQuestion(text)) {
                 const { city, country } = extractCityAndCountry(text);
@@ -263,6 +264,8 @@ function createMediaStreamHandler({ callStore, logger, openaiApiKey, weatherServ
                 );
                 callStore.addAssistantMessage(callSid, reply);
                 transcriptLines.push(`AI: ${reply}`);
+                const aiReplyLog = reply.length > 100 ? reply.slice(0, 100) + "…" : reply;
+                logger.info({ callSid, reply, role: "assistant" }, `AI: ${aiReplyLog}`);
               }
             }
           }
@@ -270,7 +273,8 @@ function createMediaStreamHandler({ callStore, logger, openaiApiKey, weatherServ
           if (ev.type === "response.output_audio_transcript.done" && ev.transcript) {
             transcriptLines.push(`AI: ${ev.transcript}`);
             callStore.addAssistantMessage(callSid, ev.transcript);
-            logger.info({ callSid, reply: ev.transcript }, "AI said");
+            const aiLog = ev.transcript.length > 100 ? ev.transcript.slice(0, 100) + "…" : ev.transcript;
+            logger.info({ callSid, reply: ev.transcript, role: "assistant" }, `AI: ${aiLog}`);
           }
 
           if (ev.type === "response.done" && weatherService?.enabled) {

@@ -26,6 +26,15 @@ const config = {
   openweather: {
     apiKey: process.env.OPENWEATHER_API_KEY || "",
   },
+  apiFootball: {
+    apiKey: process.env.API_FOOTBALL_KEY || "",
+  },
+  aviationstack: {
+    apiKey: process.env.AVIATIONSTACK_API_KEY || "",
+  },
+  alphavantage: {
+    apiKey: process.env.ALPHAVANTAGE_API_KEY || "",
+  },
   email: {
     from: required("EMAIL_FROM"),
     to: required("EMAIL_TO"),

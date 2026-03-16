@@ -7,6 +7,10 @@ const { CallStore } = require("./utils/callStore");
 const createCallRoutes = require("./routes/calls");
 const createEmailService = require("./services/email");
 const createWeatherService = require("./services/weather");
+const createTimeService = require("./services/time");
+const createSportsService = require("./services/sports");
+const createFlightsService = require("./services/flights");
+const createStocksService = require("./services/stocks");
 const createMediaStreamHandler = require("./handlers/mediaStream");
 
 function buildServer() {
@@ -44,15 +48,20 @@ function buildServer() {
 
   const server = http.createServer(app);
   const wss = new WebSocket.Server({ server, path: "/media-stream" });
-  const weatherService = createWeatherService(
-    config.openweather.apiKey,
-    logger
-  );
+  const weatherService = createWeatherService(config.openweather.apiKey, logger);
+  const timeService = createTimeService();
+  const sportsService = createSportsService(config.apiFootball.apiKey, logger);
+  const flightsService = createFlightsService(config.aviationstack.apiKey, logger);
+  const stocksService = createStocksService(config.alphavantage.apiKey, logger);
   const handleMediaStream = createMediaStreamHandler({
     callStore,
     logger,
     openaiApiKey: config.openai.apiKey,
     weatherService,
+    timeService,
+    sportsService,
+    flightsService,
+    stocksService,
   });
 
   wss.on("connection", (ws, req) => {

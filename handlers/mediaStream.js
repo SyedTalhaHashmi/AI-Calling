@@ -48,7 +48,35 @@ function extractCityAndCountry(text) {
   return { city: "unknown", country: undefined };
 }
 
-function createMediaStreamHandler({ callStore, logger, openaiApiKey, weatherService }) {
+function isTimeQuestion(text) {
+  const t = (text || "").toLowerCase();
+  return /\b(time|what time|current time|what's the time|timezone|what time is it)\b/i.test(t) || /time\s+in\s+/i.test(t);
+}
+
+function isSportsQuestion(text) {
+  const t = (text || "").toLowerCase();
+  const keywords = ["score", "scores", "game", "match", "sports", "who won", "basketball", "football", "soccer", "nba", "nfl", "mlb", "live match", "live game"];
+  return keywords.some((k) => t.includes(k));
+}
+
+function isFlightQuestion(text) {
+  const t = (text || "").toLowerCase();
+  return /\b(flight|flight status|is flight|where is flight|flight number)\b/i.test(t) || /flight\s+[a-z]{2}\s*\d+/i.test(t);
+}
+
+function extractFlightNumber(text) {
+  const match = (text || "").match(/\b([A-Za-z]{2})\s*(\d{2,4})\b/);
+  if (match) return (match[1] + match[2]).toUpperCase();
+  const fallback = (text || "").match(/([A-Za-z]{2}\d{2,4})/);
+  return fallback ? fallback[1].toUpperCase() : null;
+}
+
+function isStockQuestion(text) {
+  const t = (text || "").toLowerCase();
+  return /\b(stock|stocks|share price|share price of|price of|how much is|ticker|quote)\b/i.test(t) || /\b(AAPL|GOOGL|MSFT|AMZN|META|TSLA|NVDA)\b/i.test(t);
+}
+
+function createMediaStreamHandler({ callStore, logger, openaiApiKey, weatherService, timeService, sportsService, flightsService, stocksService }) {
   return function handleMediaStream(twilioWs, req) {
     let callSid = null;
     let streamSid = null;
@@ -157,29 +185,84 @@ function createMediaStreamHandler({ callStore, logger, openaiApiKey, weatherServ
                     const reply = result.error
                       ? "I couldn't get the weather for that place."
                       : `It's ${result.temp} degrees and ${result.description} in ${result.city}.`;
-                    openaiWs.send(
-                      JSON.stringify({
-                        type: "response.create",
-                        response: { instructions: `Say exactly: ${reply}` },
-                      })
-                    );
-                    callStore.addAssistantMessage(callSid, reply);
-                    transcriptLines.push(`AI: ${reply}`);
                     logger.info({ callSid, city, reply }, "Weather fast path");
+                    sendReply(reply);
                   } catch (err) {
                     logger.error({ callSid, err: err.message }, "Weather fast path failed");
-                    const fallback = "I couldn't get the weather right now.";
-                    openaiWs.send(
-                      JSON.stringify({
-                        type: "response.create",
-                        response: { instructions: `Say exactly: ${fallback}` },
-                      })
-                    );
-                    callStore.addAssistantMessage(callSid, fallback);
-                    transcriptLines.push(`AI: ${fallback}`);
+                    sendReply("I couldn't get the weather right now.");
                   }
                 })();
                 return;
+              }
+
+              if (timeService?.enabled && isTimeQuestion(text)) {
+                const tz = timeService.resolveTimezone(text);
+                const { time, timezone } = timeService.getCurrentTime(tz || undefined);
+                const reply = tz ? `It's ${time} in ${timezone.replace(/_/g, " ")}.` : `It's ${time}.`;
+                sendReply(reply);
+                return;
+              }
+
+              if (sportsService?.enabled && isSportsQuestion(text)) {
+                const sportKey = sportsService.detectSport(text);
+                (async () => {
+                  try {
+                    const result = await sportsService.getLiveScores(sportKey);
+                    const reply = result.error
+                      ? result.error
+                      : result.message
+                        ? result.message
+                        : `${result.sport || "Live"}: ${result.matches.join(". ")}.`;
+                    sendReply(reply);
+                    logger.info({ callSid, sportKey, reply }, "Sports fast path");
+                  } catch (err) {
+                    logger.error({ callSid, err: err.message }, "Sports fast path failed");
+                    sendReply("I couldn't get live scores right now.");
+                  }
+                })();
+                return;
+              }
+
+              if (flightsService?.enabled && isFlightQuestion(text)) {
+                const flightIata = extractFlightNumber(text);
+                (async () => {
+                  try {
+                    const result = await flightsService.getFlightStatus(flightIata || "");
+                    const reply = result.error ? result.error : result.message;
+                    sendReply(reply);
+                    logger.info({ callSid, flightIata, reply }, "Flight fast path");
+                  } catch (err) {
+                    logger.error({ callSid, err: err.message }, "Flight fast path failed");
+                    sendReply("I couldn't get that flight status.");
+                  }
+                })();
+                return;
+              }
+
+              if (stocksService?.enabled && isStockQuestion(text)) {
+                (async () => {
+                  try {
+                    const result = await stocksService.getQuote(text);
+                    const reply = result.error ? result.error : result.message;
+                    sendReply(reply);
+                    logger.info({ callSid, reply }, "Stocks fast path");
+                  } catch (err) {
+                    logger.error({ callSid, err: err.message }, "Stocks fast path failed");
+                    sendReply("I couldn't get that stock price.");
+                  }
+                })();
+                return;
+              }
+
+              function sendReply(reply) {
+                openaiWs.send(
+                  JSON.stringify({
+                    type: "response.create",
+                    response: { instructions: `Say exactly: ${reply}` },
+                  })
+                );
+                callStore.addAssistantMessage(callSid, reply);
+                transcriptLines.push(`AI: ${reply}`);
               }
             }
           }

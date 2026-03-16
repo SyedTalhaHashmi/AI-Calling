@@ -14,18 +14,39 @@ const GREETING = "Hi! This is Buddy from BuddyCallAI. You can ask me anything. W
 const WEATHER_TOOL = {
   type: "function",
   name: "get_weather",
-  description: "Get current weather for a city. Use when the user asks about weather, temperature, or conditions in a place.",
+  description: "Get current weather for a city. Use whenever the user asks about weather, temperature, or conditions. Always call this—never guess weather.",
   parameters: {
     type: "object",
     properties: {
       city: {
         type: "string",
-        description: "City name, e.g. London, New York, Paris",
+        description: "City name, e.g. London, Miami, Karachi, Paris",
+      },
+      country: {
+        type: "string",
+        description: "Optional country or state to disambiguate, e.g. France, California",
       },
     },
     required: ["city"],
   },
 };
+
+function isWeatherQuestion(text) {
+  const t = (text || "").toLowerCase();
+  const keywords = ["weather", "temperature", "forecast", "rain", "snow", "sunny", "hot", "cold", "degrees", "how warm", "how cold"];
+  return keywords.some((k) => t.includes(k));
+}
+
+function extractCityAndCountry(text) {
+  const t = (text || "").trim();
+  const inMatch = t.match(/\b(?:in|at|for)\s+([a-zA-Z\s]+?)(?:\s*,\s*([a-zA-Z\s]+))?(?:\?|\.|$)/i);
+  if (inMatch) {
+    const city = inMatch[1].trim().replace(/\s+/g, " ");
+    const country = inMatch[2]?.trim().replace(/\s+/g, " ");
+    return { city: city || "unknown", country: country || undefined };
+  }
+  return { city: "unknown", country: undefined };
+}
 
 function createMediaStreamHandler({ callStore, logger, openaiApiKey, weatherService }) {
   return function handleMediaStream(twilioWs, req) {
@@ -73,7 +94,6 @@ function createMediaStreamHandler({ callStore, logger, openaiApiKey, weatherServ
           const session = {
             type: "realtime",
             instructions: SYSTEM_PROMPT,
-            input_audio_transcription: { model: "whisper-1" },
           };
           if (weatherService && weatherService.enabled) {
             session.tools = [WEATHER_TOOL];
@@ -124,9 +144,43 @@ function createMediaStreamHandler({ callStore, logger, openaiApiKey, weatherServ
           if (ev.type === "conversation.item.added" && ev.item?.role === "user") {
             const content = ev.item?.content?.[0];
             if (content?.type === "input_audio_transcription" && content?.transcript) {
-              transcriptLines.push(`Caller: ${content.transcript}`);
-              callStore.addUserMessage(callSid, content.transcript);
-              logger.info({ callSid, transcript: content.transcript }, "User said");
+              const text = content.transcript;
+              transcriptLines.push(`Caller: ${text}`);
+              callStore.addUserMessage(callSid, text);
+              logger.info({ callSid, transcript: text }, "User said");
+
+              if (weatherService?.enabled && isWeatherQuestion(text)) {
+                const { city, country } = extractCityAndCountry(text);
+                (async () => {
+                  try {
+                    const result = await weatherService.getByCity(city, country);
+                    const reply = result.error
+                      ? "I couldn't get the weather for that place."
+                      : `It's ${result.temp} degrees and ${result.description} in ${result.city}.`;
+                    openaiWs.send(
+                      JSON.stringify({
+                        type: "response.create",
+                        response: { instructions: `Say exactly: ${reply}` },
+                      })
+                    );
+                    callStore.addAssistantMessage(callSid, reply);
+                    transcriptLines.push(`AI: ${reply}`);
+                    logger.info({ callSid, city, reply }, "Weather fast path");
+                  } catch (err) {
+                    logger.error({ callSid, err: err.message }, "Weather fast path failed");
+                    const fallback = "I couldn't get the weather right now.";
+                    openaiWs.send(
+                      JSON.stringify({
+                        type: "response.create",
+                        response: { instructions: `Say exactly: ${fallback}` },
+                      })
+                    );
+                    callStore.addAssistantMessage(callSid, fallback);
+                    transcriptLines.push(`AI: ${fallback}`);
+                  }
+                })();
+                return;
+              }
             }
           }
 
@@ -144,9 +198,10 @@ function createMediaStreamHandler({ callStore, logger, openaiApiKey, weatherServ
                 args = JSON.parse(out.arguments || "{}");
               } catch (_) {}
               const city = args.city || "unknown";
+              const country = args.country || undefined;
               (async () => {
                 try {
-                  const result = await weatherService.getByCity(city);
+                  const result = await weatherService.getByCity(city, country);
                   const output = JSON.stringify(result);
                   openaiWs.send(
                     JSON.stringify({

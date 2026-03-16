@@ -14,10 +14,11 @@ function createWeatherService(apiKey, logger) {
     };
   }
 
-  async function getByCity(city) {
+  async function getByCity(city, country) {
+    const q = country ? `${city},${country}` : city;
     try {
       const res = await axios.get(BASE, {
-        params: { q: city, appid: apiKey, units: "metric" },
+        params: { q, appid: apiKey, units: "metric" },
         timeout: 5000,
       });
       const d = res.data;
@@ -33,7 +34,7 @@ function createWeatherService(apiKey, logger) {
       if (err.response?.status === 404) {
         return { error: "City not found." };
       }
-      logger.warn({ err: err.message, city }, "OpenWeather request failed");
+      logger.warn({ err: err.message, q }, "OpenWeather request failed");
       return { error: "Could not fetch weather." };
     }
   }

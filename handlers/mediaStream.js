@@ -41,7 +41,7 @@ function isWeatherQuestion(text) {
 
 function extractCityAndCountry(text) {
   const t = (text || "").trim();
-  const inMatch = t.match(/\b(?:in|at|for)\s+([a-zA-Z\s]+?)(?:\s*,\s*([a-zA-Z\s]+))?(?:\?|\.|$)/i);
+  const inMatch = t.match(/\b(?:in|at|for|of)\s+([a-zA-Z\s]+?)(?:\s*,\s*([a-zA-Z\s]+))?(?:\?|\.|$)/i);
   if (inMatch) {
     const city = inMatch[1].trim().replace(/\s+/g, " ");
     const country = inMatch[2]?.trim().replace(/\s+/g, " ");
@@ -145,10 +145,7 @@ function createMediaStreamHandler({ callStore, logger, openaiApiKey, weatherServ
           openaiWs.send(
             JSON.stringify({
               type: "response.create",
-              response: {
-                instructions: `Say exactly: ${GREETING}`,
-                audio: { voice: VOICE },
-              },
+              response: { instructions: `Say exactly: ${GREETING}` },
             })
           );
         });
@@ -174,10 +171,7 @@ function createMediaStreamHandler({ callStore, logger, openaiApiKey, weatherServ
             openaiWs.send(
               JSON.stringify({
                 type: "response.create",
-                response: {
-                  instructions: instruction,
-                  audio: { voice: VOICE },
-                },
+                response: { instructions: instruction },
               })
             );
             callStore.addAssistantMessage(callSid, reply);
@@ -326,12 +320,7 @@ function createMediaStreamHandler({ callStore, logger, openaiApiKey, weatherServ
                       },
                     })
                   );
-                  openaiWs.send(
-                    JSON.stringify({
-                      type: "response.create",
-                      response: { audio: { voice: VOICE } },
-                    })
-                  );
+                  openaiWs.send(JSON.stringify({ type: "response.create" }));
                   logger.info({ callSid, city, result }, "Weather tool result");
                 } catch (err) {
                   logger.error({ callSid, err: err.message }, "Weather tool failed");
@@ -345,12 +334,7 @@ function createMediaStreamHandler({ callStore, logger, openaiApiKey, weatherServ
                       },
                     })
                   );
-                  openaiWs.send(
-                    JSON.stringify({
-                      type: "response.create",
-                      response: { audio: { voice: VOICE } },
-                    })
-                  );
+                  openaiWs.send(JSON.stringify({ type: "response.create" }));
                 }
               })();
             }

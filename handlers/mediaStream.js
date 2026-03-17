@@ -10,8 +10,8 @@ const OPENAI_REALTIME_URL = "wss://api.openai.com/v1/realtime?model=gpt-realtime
 
 // Short, warm greeting — then stop and listen (no long intros)
 const GREETING = "Hi! I'm Buddy, your AI friend. Ask me anything you want.";
-// Warm, friendly female voice (coral); alternatives: shimmer, sage
-const VOICE = "coral";
+// Friendly voice: marin (female); alternatives: coral, shimmer, sage
+const VOICE = "marin";
 
 const WEATHER_TOOL = {
   type: "function",

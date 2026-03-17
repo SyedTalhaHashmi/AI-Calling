@@ -8,8 +8,10 @@ const { SYSTEM_PROMPT } = require("../utils/callStore");
 
 const OPENAI_REALTIME_URL = "wss://api.openai.com/v1/realtime?model=gpt-realtime";
 
-// Short, clear, inviting greeting (first 5 seconds matter)
-const GREETING = "Hi! This is Buddy from BuddyCallAI. You can ask me anything. What's on your mind today?";
+// Short, warm greeting — then stop and listen (no long intros)
+const GREETING = "Hi! I'm Buddy, your AI friend. Ask me anything you want.";
+// Warm, friendly female voice (coral); alternatives: shimmer, sage
+const VOICE = "coral";
 
 const WEATHER_TOOL = {
   type: "function",
@@ -122,6 +124,7 @@ function createMediaStreamHandler({ callStore, logger, openaiApiKey, weatherServ
           const session = {
             type: "realtime",
             instructions: SYSTEM_PROMPT,
+            voice: VOICE,
           };
           if (weatherService && weatherService.enabled) {
             session.tools = [WEATHER_TOOL];
@@ -130,7 +133,7 @@ function createMediaStreamHandler({ callStore, logger, openaiApiKey, weatherServ
           openaiWs.send(
             JSON.stringify({ type: "session.update", session })
           );
-          // Trigger initial greeting (short, clear, inviting)
+          // Say greeting once, then stop and listen
           openaiWs.send(
             JSON.stringify({
               type: "response.create",

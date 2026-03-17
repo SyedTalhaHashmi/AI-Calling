@@ -84,6 +84,7 @@ function createMediaStreamHandler({ callStore, logger, openaiApiKey, weatherServ
     let streamSid = null;
     let openaiWs = null;
     let transcriptLines = [];
+    let lastUserTranscript = "";
 
     const cleanup = () => {
       if (openaiWs && openaiWs.readyState === WebSocket.OPEN) {
@@ -165,6 +166,114 @@ function createMediaStreamHandler({ callStore, logger, openaiApiKey, weatherServ
             return;
           }
 
+          function sendReply(reply, opts = {}) {
+            const instruction =
+              opts.multilingual
+                ? `Say the following in one short sentence using the caller's language (15 to 20 words max): ${reply}.`
+                : `Say exactly: ${reply}`;
+            openaiWs.send(
+              JSON.stringify({
+                type: "response.create",
+                response: {
+                  instructions: instruction,
+                  audio: { voice: VOICE },
+                },
+              })
+            );
+            callStore.addAssistantMessage(callSid, reply);
+            transcriptLines.push(`AI: ${reply}`);
+            const aiReplyLog = reply.length > 100 ? reply.slice(0, 100) + "…" : reply;
+            logger.info({ callSid, reply, role: "assistant" }, `AI: ${aiReplyLog}`);
+          }
+
+          function handleUserTranscript(text) {
+            const trimmed = (text != null && text !== "" ? String(text).trim() : "");
+            if (!trimmed) return;
+            const userLog = trimmed.length > 100 ? trimmed.slice(0, 100) + "…" : trimmed;
+            logger.info({ callSid, transcript: trimmed, role: "user" }, `USER: ${userLog}`);
+            if (trimmed === lastUserTranscript) return;
+            lastUserTranscript = trimmed;
+            transcriptLines.push(`Caller: ${trimmed}`);
+            callStore.addUserMessage(callSid, trimmed);
+
+            if (weatherService?.enabled && isWeatherQuestion(trimmed)) {
+              const { city, country } = extractCityAndCountry(trimmed);
+              (async () => {
+                try {
+                  const result = await weatherService.getByCity(city, country);
+                  const fact = result.error
+                    ? result.error
+                    : `${result.temp} degrees and ${result.description} in ${result.city}`;
+                  logger.info({ callSid, city, fact }, "Weather fast path");
+                  sendReply(fact, { multilingual: !result.error });
+                } catch (err) {
+                  logger.error({ callSid, err: err.message }, "Weather fast path failed");
+                  sendReply("I couldn't get the weather right now.", { multilingual: false });
+                }
+              })();
+              return;
+            }
+            if (timeService?.enabled && isTimeQuestion(trimmed)) {
+              const tz = timeService.resolveTimezone(trimmed);
+              const { time, timezone } = timeService.getCurrentTime(tz || undefined);
+              const fact = tz ? `${time} in ${timezone.replace(/_/g, " ")}` : time;
+              sendReply(fact, { multilingual: true });
+              return;
+            }
+            if (sportsService?.enabled && isSportsQuestion(trimmed)) {
+              const sportKey = sportsService.detectSport(trimmed);
+              (async () => {
+                try {
+                  const result = await sportsService.getLiveScores(sportKey);
+                  const fact = result.error
+                    ? result.error
+                    : result.message
+                      ? result.message
+                      : `${result.sport || "Live"}: ${result.matches.join(". ")}`;
+                  logger.info({ callSid, sportKey, fact }, "Sports fast path");
+                  sendReply(fact, { multilingual: !result.error });
+                } catch (err) {
+                  logger.error({ callSid, err: err.message }, "Sports fast path failed");
+                  sendReply("I couldn't get live scores right now.", { multilingual: false });
+                }
+              })();
+              return;
+            }
+            if (flightsService?.enabled && isFlightQuestion(trimmed)) {
+              const flightIata = extractFlightNumber(trimmed);
+              (async () => {
+                try {
+                  const result = await flightsService.getFlightStatus(flightIata || "");
+                  const fact = result.error ? result.error : result.message;
+                  logger.info({ callSid, flightIata, fact }, "Flight fast path");
+                  sendReply(fact, { multilingual: !result.error });
+                } catch (err) {
+                  logger.error({ callSid, err: err.message }, "Flight fast path failed");
+                  sendReply("I couldn't get that flight status.", { multilingual: false });
+                }
+              })();
+              return;
+            }
+            if (stocksService?.enabled && isStockQuestion(trimmed)) {
+              (async () => {
+                try {
+                  const result = await stocksService.getQuote(trimmed);
+                  const fact = result.error ? result.error : result.message;
+                  logger.info({ callSid, fact }, "Stocks fast path");
+                  sendReply(fact, { multilingual: !result.error });
+                } catch (err) {
+                  logger.error({ callSid, err: err.message }, "Stocks fast path failed");
+                  sendReply("I couldn't get that stock price.", { multilingual: false });
+                }
+              })();
+              return;
+            }
+          }
+
+          if (ev.type === "conversation.item.input_audio_transcription.completed" && ev.transcript) {
+            handleUserTranscript(ev.transcript);
+          }
+
           if (ev.type === "response.output_audio.delta" && ev.delta) {
             try {
               const mulawBase64 = openAIToTwilio(ev.delta);
@@ -181,111 +290,10 @@ function createMediaStreamHandler({ callStore, logger, openaiApiKey, weatherServ
           }
 
           if (ev.type === "conversation.item.added" && ev.item?.role === "user") {
-            const content = ev.item?.content?.[0];
-            if (content?.type === "input_audio_transcription" && content?.transcript) {
-              const text = content.transcript;
-              transcriptLines.push(`Caller: ${text}`);
-              callStore.addUserMessage(callSid, text);
-              const userLog = text.length > 100 ? text.slice(0, 100) + "…" : text;
-              logger.info({ callSid, transcript: text, role: "user" }, `USER: ${userLog}`);
-
-              if (weatherService?.enabled && isWeatherQuestion(text)) {
-                const { city, country } = extractCityAndCountry(text);
-                (async () => {
-                  try {
-                    const result = await weatherService.getByCity(city, country);
-                    const fact = result.error
-                      ? result.error
-                      : `${result.temp} degrees and ${result.description} in ${result.city}`;
-                    logger.info({ callSid, city, fact }, "Weather fast path");
-                    sendReply(fact, { multilingual: !result.error });
-                  } catch (err) {
-                    logger.error({ callSid, err: err.message }, "Weather fast path failed");
-                    sendReply("I couldn't get the weather right now.", { multilingual: false });
-                  }
-                })();
-                return;
-              }
-
-              if (timeService?.enabled && isTimeQuestion(text)) {
-                const tz = timeService.resolveTimezone(text);
-                const { time, timezone } = timeService.getCurrentTime(tz || undefined);
-                const fact = tz ? `${time} in ${timezone.replace(/_/g, " ")}` : time;
-                sendReply(fact, { multilingual: true });
-                return;
-              }
-
-              if (sportsService?.enabled && isSportsQuestion(text)) {
-                const sportKey = sportsService.detectSport(text);
-                (async () => {
-                  try {
-                    const result = await sportsService.getLiveScores(sportKey);
-                    const fact = result.error
-                      ? result.error
-                      : result.message
-                        ? result.message
-                        : `${result.sport || "Live"}: ${result.matches.join(". ")}`;
-                    logger.info({ callSid, sportKey, fact }, "Sports fast path");
-                    sendReply(fact, { multilingual: !result.error });
-                  } catch (err) {
-                    logger.error({ callSid, err: err.message }, "Sports fast path failed");
-                    sendReply("I couldn't get live scores right now.", { multilingual: false });
-                  }
-                })();
-                return;
-              }
-
-              if (flightsService?.enabled && isFlightQuestion(text)) {
-                const flightIata = extractFlightNumber(text);
-                (async () => {
-                  try {
-                    const result = await flightsService.getFlightStatus(flightIata || "");
-                    const fact = result.error ? result.error : result.message;
-                    logger.info({ callSid, flightIata, fact }, "Flight fast path");
-                    sendReply(fact, { multilingual: !result.error });
-                  } catch (err) {
-                    logger.error({ callSid, err: err.message }, "Flight fast path failed");
-                    sendReply("I couldn't get that flight status.", { multilingual: false });
-                  }
-                })();
-                return;
-              }
-
-              if (stocksService?.enabled && isStockQuestion(text)) {
-                (async () => {
-                  try {
-                    const result = await stocksService.getQuote(text);
-                    const fact = result.error ? result.error : result.message;
-                    logger.info({ callSid, fact }, "Stocks fast path");
-                    sendReply(fact, { multilingual: !result.error });
-                  } catch (err) {
-                    logger.error({ callSid, err: err.message }, "Stocks fast path failed");
-                    sendReply("I couldn't get that stock price.", { multilingual: false });
-                  }
-                })();
-                return;
-              }
-
-              function sendReply(reply, opts = {}) {
-                const instruction =
-                  opts.multilingual
-                    ? `Say the following in one short sentence using the caller's language (15 to 20 words max): ${reply}.`
-                    : `Say exactly: ${reply}`;
-                openaiWs.send(
-                  JSON.stringify({
-                    type: "response.create",
-                    response: {
-                      instructions: instruction,
-                      audio: { voice: VOICE },
-                    },
-                  })
-                );
-                callStore.addAssistantMessage(callSid, reply);
-                transcriptLines.push(`AI: ${reply}`);
-                const aiReplyLog = reply.length > 100 ? reply.slice(0, 100) + "…" : reply;
-                logger.info({ callSid, reply, role: "assistant" }, `AI: ${aiReplyLog}`);
-              }
-            }
+            const contents = ev.item?.content || [];
+            const fromContent = contents.map((c) => (c?.transcript != null ? String(c.transcript) : c?.text != null ? String(c.text) : "").trim()).filter(Boolean);
+            const text = (ev.transcript != null ? String(ev.transcript) : "").trim() || fromContent[0] || "";
+            if (text) handleUserTranscript(text);
           }
 
           if (ev.type === "response.output_audio_transcript.done" && ev.transcript) {

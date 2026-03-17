@@ -124,7 +124,14 @@ function createMediaStreamHandler({ callStore, logger, openaiApiKey, weatherServ
           const session = {
             type: "realtime",
             instructions: SYSTEM_PROMPT,
-            voice: VOICE,
+            audio: {
+              input: {
+                transcription: { model: "whisper-1" },
+              },
+              output: {
+                voice: VOICE,
+              },
+            },
           };
           if (weatherService && weatherService.enabled) {
             session.tools = [WEATHER_TOOL];
@@ -139,6 +146,7 @@ function createMediaStreamHandler({ callStore, logger, openaiApiKey, weatherServ
               type: "response.create",
               response: {
                 instructions: `Say exactly: ${GREETING}`,
+                audio: { voice: VOICE },
               },
             })
           );
@@ -186,14 +194,14 @@ function createMediaStreamHandler({ callStore, logger, openaiApiKey, weatherServ
                 (async () => {
                   try {
                     const result = await weatherService.getByCity(city, country);
-                    const reply = result.error
-                      ? "I couldn't get the weather for that place."
-                      : `It's ${result.temp} degrees and ${result.description} in ${result.city}.`;
-                    logger.info({ callSid, city, reply }, "Weather fast path");
-                    sendReply(reply);
+                    const fact = result.error
+                      ? result.error
+                      : `${result.temp} degrees and ${result.description} in ${result.city}`;
+                    logger.info({ callSid, city, fact }, "Weather fast path");
+                    sendReply(fact, { multilingual: !result.error });
                   } catch (err) {
                     logger.error({ callSid, err: err.message }, "Weather fast path failed");
-                    sendReply("I couldn't get the weather right now.");
+                    sendReply("I couldn't get the weather right now.", { multilingual: false });
                   }
                 })();
                 return;
@@ -202,8 +210,8 @@ function createMediaStreamHandler({ callStore, logger, openaiApiKey, weatherServ
               if (timeService?.enabled && isTimeQuestion(text)) {
                 const tz = timeService.resolveTimezone(text);
                 const { time, timezone } = timeService.getCurrentTime(tz || undefined);
-                const reply = tz ? `It's ${time} in ${timezone.replace(/_/g, " ")}.` : `It's ${time}.`;
-                sendReply(reply);
+                const fact = tz ? `${time} in ${timezone.replace(/_/g, " ")}` : time;
+                sendReply(fact, { multilingual: true });
                 return;
               }
 
@@ -212,16 +220,16 @@ function createMediaStreamHandler({ callStore, logger, openaiApiKey, weatherServ
                 (async () => {
                   try {
                     const result = await sportsService.getLiveScores(sportKey);
-                    const reply = result.error
+                    const fact = result.error
                       ? result.error
                       : result.message
                         ? result.message
-                        : `${result.sport || "Live"}: ${result.matches.join(". ")}.`;
-                    sendReply(reply);
-                    logger.info({ callSid, sportKey, reply }, "Sports fast path");
+                        : `${result.sport || "Live"}: ${result.matches.join(". ")}`;
+                    logger.info({ callSid, sportKey, fact }, "Sports fast path");
+                    sendReply(fact, { multilingual: !result.error });
                   } catch (err) {
                     logger.error({ callSid, err: err.message }, "Sports fast path failed");
-                    sendReply("I couldn't get live scores right now.");
+                    sendReply("I couldn't get live scores right now.", { multilingual: false });
                   }
                 })();
                 return;
@@ -232,12 +240,12 @@ function createMediaStreamHandler({ callStore, logger, openaiApiKey, weatherServ
                 (async () => {
                   try {
                     const result = await flightsService.getFlightStatus(flightIata || "");
-                    const reply = result.error ? result.error : result.message;
-                    sendReply(reply);
-                    logger.info({ callSid, flightIata, reply }, "Flight fast path");
+                    const fact = result.error ? result.error : result.message;
+                    logger.info({ callSid, flightIata, fact }, "Flight fast path");
+                    sendReply(fact, { multilingual: !result.error });
                   } catch (err) {
                     logger.error({ callSid, err: err.message }, "Flight fast path failed");
-                    sendReply("I couldn't get that flight status.");
+                    sendReply("I couldn't get that flight status.", { multilingual: false });
                   }
                 })();
                 return;
@@ -247,22 +255,29 @@ function createMediaStreamHandler({ callStore, logger, openaiApiKey, weatherServ
                 (async () => {
                   try {
                     const result = await stocksService.getQuote(text);
-                    const reply = result.error ? result.error : result.message;
-                    sendReply(reply);
-                    logger.info({ callSid, reply }, "Stocks fast path");
+                    const fact = result.error ? result.error : result.message;
+                    logger.info({ callSid, fact }, "Stocks fast path");
+                    sendReply(fact, { multilingual: !result.error });
                   } catch (err) {
                     logger.error({ callSid, err: err.message }, "Stocks fast path failed");
-                    sendReply("I couldn't get that stock price.");
+                    sendReply("I couldn't get that stock price.", { multilingual: false });
                   }
                 })();
                 return;
               }
 
-              function sendReply(reply) {
+              function sendReply(reply, opts = {}) {
+                const instruction =
+                  opts.multilingual
+                    ? `Say the following in one short sentence using the caller's language (15 to 20 words max): ${reply}.`
+                    : `Say exactly: ${reply}`;
                 openaiWs.send(
                   JSON.stringify({
                     type: "response.create",
-                    response: { instructions: `Say exactly: ${reply}` },
+                    response: {
+                      instructions: instruction,
+                      audio: { voice: VOICE },
+                    },
                   })
                 );
                 callStore.addAssistantMessage(callSid, reply);
@@ -303,7 +318,12 @@ function createMediaStreamHandler({ callStore, logger, openaiApiKey, weatherServ
                       },
                     })
                   );
-                  openaiWs.send(JSON.stringify({ type: "response.create" }));
+                  openaiWs.send(
+                    JSON.stringify({
+                      type: "response.create",
+                      response: { audio: { voice: VOICE } },
+                    })
+                  );
                   logger.info({ callSid, city, result }, "Weather tool result");
                 } catch (err) {
                   logger.error({ callSid, err: err.message }, "Weather tool failed");
@@ -317,7 +337,12 @@ function createMediaStreamHandler({ callStore, logger, openaiApiKey, weatherServ
                       },
                     })
                   );
-                  openaiWs.send(JSON.stringify({ type: "response.create" }));
+                  openaiWs.send(
+                    JSON.stringify({
+                      type: "response.create",
+                      response: { audio: { voice: VOICE } },
+                    })
+                  );
                 }
               })();
             }

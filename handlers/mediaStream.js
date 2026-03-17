@@ -85,6 +85,7 @@ function createMediaStreamHandler({ callStore, logger, openaiApiKey, weatherServ
     let openaiWs = null;
     let transcriptLines = [];
     let lastUserTranscript = "";
+    let responseInProgress = false;
 
     const cleanup = () => {
       if (openaiWs && openaiWs.readyState === WebSocket.OPEN) {
@@ -164,6 +165,10 @@ function createMediaStreamHandler({ callStore, logger, openaiApiKey, weatherServ
           }
 
           function sendReply(reply, opts = {}) {
+            if (responseInProgress) {
+              logger.info({ callSid }, "Skip fast-path: response already in progress");
+              return;
+            }
             const instruction =
               opts.multilingual
                 ? `Say the following in one short sentence using the caller's language (15 to 20 words max): ${reply}.`
@@ -268,7 +273,14 @@ function createMediaStreamHandler({ callStore, logger, openaiApiKey, weatherServ
             handleUserTranscript(ev.transcript);
           }
 
+          if (ev.type === "response.created") {
+            responseInProgress = true;
+          }
+          if (ev.type === "response.done" || ev.type === "response.cancelled" || ev.type === "response.failed") {
+            responseInProgress = false;
+          }
           if (ev.type === "response.output_audio.delta" && ev.delta) {
+            responseInProgress = true;
             try {
               const mulawBase64 = openAIToTwilio(ev.delta);
               twilioWs.send(

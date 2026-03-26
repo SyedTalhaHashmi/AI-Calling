@@ -13,6 +13,20 @@ const GREETING = "Hi! I'm Buddy, your AI friend. Ask me anything you want.";
 // Friendly voice: marin (female); alternatives: coral, shimmer, sage
 const VOICE = "marin";
 
+/** Realtime input: denoise before VAD, then stricter speech onset so noise rarely triggers barge-in. */
+const REALTIME_INPUT_AUDIO = {
+  noise_reduction: { type: "far_field" },
+  transcription: { model: "whisper-1" },
+  turn_detection: {
+    type: "server_vad",
+    threshold: 0.72,
+    prefix_padding_ms: 300,
+    silence_duration_ms: 600,
+    interrupt_response: true,
+    create_response: true,
+  },
+};
+
 const WEATHER_TOOL = {
   type: "function",
   name: "get_weather",
@@ -127,9 +141,7 @@ function createMediaStreamHandler({ callStore, logger, openaiApiKey, weatherServ
             type: "realtime",
             instructions: SYSTEM_PROMPT,
             audio: {
-              input: {
-                transcription: { model: "whisper-1" },
-              },
+              input: REALTIME_INPUT_AUDIO,
               output: {
                 voice: VOICE,
               },

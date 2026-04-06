@@ -418,3 +418,12 @@ The current architecture is intentionally simple and can evolve into:
 - Horizontal scaling with shared session store + queue workers
 
 These are intentionally deferred for this prototype.
+
+## Website platform (optional, separate apps)
+
+The **core voice server** in this repo root (`server.js`, `handlers/`, `routes/calls.js`) is unchanged. For accounts, dashboard, and contact forms, use:
+
+- **`backend/`** — Node.js + Express + PostgreSQL (Prisma). See `backend/README.md`.
+- **`frontend/`** — React (Vite). See `frontend/README.md`.
+
+Run the core server, API, and SPA as three processes in development.

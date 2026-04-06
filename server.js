@@ -11,6 +11,7 @@ const createTimeService = require("./services/time");
 const createSportsService = require("./services/sports");
 const createFlightsService = require("./services/flights");
 const createStocksService = require("./services/stocks");
+const createPlatformApi = require("./services/platformApi");
 const createMediaStreamHandler = require("./handlers/mediaStream");
 
 function buildServer() {
@@ -21,6 +22,7 @@ function buildServer() {
       emailConfig: config.email,
       logger,
     }),
+    platformApi: createPlatformApi(config, logger),
   };
 
   app.set("trust proxy", true);
@@ -62,6 +64,7 @@ function buildServer() {
     sportsService,
     flightsService,
     stocksService,
+    platformApi: services.platformApi,
   });
 
   wss.on("connection", (ws, req) => {

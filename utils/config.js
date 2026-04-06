@@ -44,6 +44,11 @@ const config = {
     smtpPass: process.env.SMTP_PASS || "",
     smtpSecure: process.env.SMTP_SECURE === "true",
   },
+  platform: {
+    apiBaseUrl: process.env.PLATFORM_API_BASE_URL || "",
+    integrationSecret: process.env.INTEGRATION_WEBHOOK_SECRET || "",
+    usageSecret: process.env.USAGE_WEBHOOK_SECRET || "",
+  },
 };
 
 module.exports = config;

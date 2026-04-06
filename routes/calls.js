@@ -45,11 +45,21 @@ function createCallRoutes({ logger, callStore, services, config }) {
         logger.info({ callSid, ringDelaySeconds: ringDelay }, "Ringing before connect");
         await new Promise((r) => setTimeout(r, ringDelay * 1000));
       }
-      callStore.getOrCreate(callSid);
+      const session = callStore.getOrCreate(callSid);
+      session.callerNumber = req.body.From || null;
+      session.calledNumber = req.body.To || null;
       logger.info(
         { callSid, from: req.body.From, to: req.body.To, streamUrl },
         "Call started (streaming)"
       );
+      services.platformApi
+        ?.notifyCallStart({
+          callSid,
+          callerNumber: req.body.From || null,
+          calledNumber: req.body.To || null,
+          startedAt: new Date().toISOString(),
+        })
+        .catch(() => {});
 
       twiml.connect().stream({ url: streamUrl });
       return res.type("text/xml").send(twiml.toString());
@@ -87,6 +97,7 @@ function createCallRoutes({ logger, callStore, services, config }) {
       return res.status(200).send("ok");
     }
 
+    let transcriptSent = false;
     try {
       const transcriptBody = formatTranscript(session);
       await services.email.sendTranscript({
@@ -95,11 +106,35 @@ function createCallRoutes({ logger, callStore, services, config }) {
         startedAt: session.startedAt,
       });
       callStore.markEmailed(callSid);
+      transcriptSent = true;
     } catch (error) {
       logger.error(
         { callSid, err: error.message },
         "Failed sending transcript email"
       );
+    }
+
+    const durationSeconds = Math.max(0, Number(req.body.CallDuration || 0));
+    const callerNumber = req.body.From || session.callerNumber || null;
+    const calledNumber = req.body.To || session.calledNumber || null;
+    services.platformApi
+      ?.notifyCallEnd({
+        callSid,
+        status: callStatus,
+        endedAt: new Date().toISOString(),
+        durationSeconds,
+        transcriptSent,
+        callerNumber,
+        calledNumber,
+      })
+      .catch(() => {});
+    if (durationSeconds > 0) {
+      services.platformApi
+        ?.reportUsage({
+          callerNumber,
+          secondsConsumed: durationSeconds,
+        })
+        .catch(() => {});
     }
 
     callStore.delete(callSid);

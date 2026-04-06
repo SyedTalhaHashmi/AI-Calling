@@ -1,0 +1,1484 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>BuddyCallAI — Platform Dashboard</title>
+<link href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=DM+Sans:wght@300;400;500;600&display=swap" rel="stylesheet"/>
+<style>
+:root {
+  --bg: #080B14;
+  --bg2: #0D1120;
+  --bg3: #111827;
+  --surface: #161D2E;
+  --surface2: #1C2438;
+  --border: rgba(255,255,255,0.07);
+  --border2: rgba(79,195,247,0.3);
+  --cyan: #4FC3F7;
+  --cyan2: #00B4D8;
+  --cyan-dim: rgba(79,195,247,0.08);
+  --green: #4CAF50;
+  --green2: #66BB6A;
+  --amber: #FFB300;
+  --red: #EF5350;
+  --purple: #8B5CF6;
+  --white: #F1F5F9;
+  --text2: #94A3B8;
+  --text3: #475569;
+  --font: 'Syne', sans-serif;
+  --font2: 'DM Sans', sans-serif;
+  --radius: 10px;
+  --radius-lg: 16px;
+  --sidebar-w: 260px;
+}
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+html { scroll-behavior: smooth; }
+body {
+  font-family: var(--font2);
+  background: var(--bg);
+  color: var(--white);
+  min-height: 100vh;
+  overflow-x: hidden;
+}
+
+/* ─── AUTH SCREENS ─── */
+#authScreen {
+  min-height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg);
+  position: relative;
+}
+#authScreen::before {
+  content: '';
+  position: fixed;
+  top: -200px; left: 50%;
+  transform: translateX(-50%);
+  width: 900px; height: 600px;
+  background: radial-gradient(ellipse at center, rgba(79,195,247,0.12) 0%, transparent 70%);
+  pointer-events: none;
+}
+.auth-card {
+  background: var(--bg3);
+  border: 1px solid var(--border2);
+  border-radius: 20px;
+  padding: 48px 44px;
+  width: 100%;
+  max-width: 460px;
+  position: relative;
+  box-shadow: 0 40px 120px rgba(0,0,0,0.6), 0 0 0 1px rgba(79,195,247,0.1);
+}
+.auth-logo {
+  display: flex; align-items: center; gap: 12px;
+  margin-bottom: 36px;
+}
+.auth-logo-icon {
+  width: 44px; height: 44px; border-radius: 12px;
+  background: linear-gradient(135deg, var(--cyan), var(--cyan2));
+  display: flex; align-items: center; justify-content: center;
+  font-size: 22px;
+}
+.auth-logo-text { font-family: var(--font); font-size: 22px; font-weight: 800; }
+.auth-logo-text span { color: var(--cyan); }
+.auth-tabs {
+  display: flex; background: var(--surface); border-radius: 10px; padding: 4px; margin-bottom: 32px;
+}
+.auth-tab {
+  flex: 1; padding: 10px; border-radius: 8px;
+  font-family: var(--font); font-size: 13px; font-weight: 600;
+  color: var(--text2); cursor: pointer; text-align: center;
+  transition: all .2s; border: none; background: transparent;
+}
+.auth-tab.active { background: var(--cyan); color: var(--bg); }
+.form-group { margin-bottom: 18px; }
+.form-label {
+  display: block; font-family: var(--font); font-size: 11px; font-weight: 700;
+  color: var(--text2); letter-spacing: 1.5px; text-transform: uppercase; margin-bottom: 8px;
+}
+.form-input {
+  width: 100%; padding: 13px 16px;
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: var(--radius); color: var(--white);
+  font-family: var(--font2); font-size: 15px;
+  transition: all .2s; outline: none;
+}
+.form-input:focus { border-color: var(--cyan); box-shadow: 0 0 0 3px rgba(79,195,247,0.12); }
+.form-input::placeholder { color: var(--text3); }
+.form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+.btn-primary {
+  width: 100%; padding: 15px;
+  background: linear-gradient(135deg, var(--cyan), var(--cyan2));
+  color: var(--bg); border: none; border-radius: var(--radius);
+  font-family: var(--font); font-size: 15px; font-weight: 700;
+  cursor: pointer; transition: all .2s; letter-spacing: .5px;
+}
+.btn-primary:hover { opacity: .88; transform: translateY(-1px); box-shadow: 0 8px 24px rgba(79,195,247,0.3); }
+.auth-divider { text-align: center; color: var(--text3); font-size: 13px; margin: 20px 0; position: relative; }
+.auth-divider::before, .auth-divider::after {
+  content: ''; position: absolute; top: 50%; height: 1px;
+  width: calc(50% - 30px); background: var(--border);
+}
+.auth-divider::before { left: 0; }
+.auth-divider::after { right: 0; }
+.coupon-row {
+  display: flex; gap: 10px; align-items: flex-end;
+}
+.coupon-row .form-group { flex: 1; margin: 0; }
+.btn-apply {
+  padding: 13px 18px; background: var(--cyan-dim);
+  border: 1px solid var(--border2); border-radius: var(--radius);
+  color: var(--cyan); font-family: var(--font); font-size: 13px; font-weight: 700;
+  cursor: pointer; white-space: nowrap; transition: all .2s;
+}
+.btn-apply:hover { background: var(--cyan); color: var(--bg); }
+.plan-picker {
+  display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin-bottom: 18px;
+}
+.plan-opt {
+  border: 1px solid var(--border); border-radius: 10px; padding: 12px 10px;
+  cursor: pointer; text-align: center; transition: all .2s; background: var(--surface);
+}
+.plan-opt:hover { border-color: var(--border2); }
+.plan-opt.selected { border-color: var(--cyan); background: var(--cyan-dim); }
+.plan-opt .po-name { font-family: var(--font); font-size: 13px; font-weight: 700; color: var(--white); }
+.plan-opt .po-price { font-size: 12px; color: var(--cyan); font-weight: 600; margin-top: 2px; }
+.auth-note { font-size: 12px; color: var(--text3); text-align: center; margin-top: 16px; }
+.auth-note a { color: var(--cyan); text-decoration: none; }
+.coupon-success { font-size: 12px; color: var(--green); margin-top: 4px; display: none; }
+
+/* ─── APP LAYOUT ─── */
+#appScreen { display: none; min-height: 100vh; flex-direction: column; }
+#appScreen.active { display: flex; }
+.app-body { display: flex; flex: 1; }
+
+/* ─── SIDEBAR ─── */
+.sidebar {
+  width: var(--sidebar-w);
+  background: var(--bg3);
+  border-right: 1px solid var(--border);
+  display: flex; flex-direction: column;
+  position: fixed; top: 0; left: 0; bottom: 0;
+  z-index: 100;
+  transition: transform .3s;
+}
+.sidebar-logo {
+  padding: 24px 22px 20px;
+  display: flex; align-items: center; gap: 10px;
+  border-bottom: 1px solid var(--border);
+}
+.sidebar-logo-icon {
+  width: 36px; height: 36px; border-radius: 10px;
+  background: linear-gradient(135deg, var(--cyan), var(--cyan2));
+  display: flex; align-items: center; justify-content: center; font-size: 18px;
+}
+.sidebar-logo-text { font-family: var(--font); font-size: 18px; font-weight: 800; }
+.sidebar-logo-text span { color: var(--cyan); }
+.sidebar-nav { flex: 1; padding: 16px 12px; overflow-y: auto; }
+.nav-section-label {
+  font-family: var(--font); font-size: 10px; font-weight: 700;
+  color: var(--text3); letter-spacing: 2px; text-transform: uppercase;
+  padding: 16px 10px 8px;
+}
+.nav-item {
+  display: flex; align-items: center; gap: 12px;
+  padding: 11px 14px; border-radius: 10px;
+  font-size: 14px; font-weight: 500; color: var(--text2);
+  cursor: pointer; transition: all .2s; margin-bottom: 2px;
+  border: none; background: none; width: 100%; text-align: left;
+}
+.nav-item:hover { background: var(--surface); color: var(--white); }
+.nav-item.active { background: var(--cyan-dim); color: var(--cyan); border: 1px solid rgba(79,195,247,0.15); }
+.nav-item .nav-icon { font-size: 16px; flex-shrink: 0; }
+.nav-badge {
+  margin-left: auto; background: var(--cyan); color: var(--bg);
+  font-size: 10px; font-weight: 700; font-family: var(--font);
+  padding: 2px 7px; border-radius: 100px;
+}
+.sidebar-bottom {
+  padding: 16px 12px;
+  border-top: 1px solid var(--border);
+}
+.user-pill {
+  display: flex; align-items: center; gap: 10px;
+  padding: 10px 12px; border-radius: 10px;
+  background: var(--surface); cursor: pointer;
+  transition: all .2s;
+}
+.user-pill:hover { background: var(--surface2); }
+.user-avatar {
+  width: 32px; height: 32px; border-radius: 8px;
+  background: linear-gradient(135deg, #8B5CF6, #06B6D4);
+  display: flex; align-items: center; justify-content: center;
+  font-size: 14px; font-weight: 700; font-family: var(--font);
+  flex-shrink: 0;
+}
+.user-info { flex: 1; min-width: 0; }
+.user-name { font-size: 13px; font-weight: 600; color: var(--white); truncate: true; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.user-plan { font-size: 11px; color: var(--cyan); }
+.logout-btn {
+  background: none; border: none; color: var(--text3);
+  cursor: pointer; padding: 4px; font-size: 16px; transition: color .2s;
+}
+.logout-btn:hover { color: var(--red); }
+
+/* ─── MAIN CONTENT ─── */
+.main-content {
+  margin-left: var(--sidebar-w);
+  flex: 1; padding: 32px;
+  overflow-y: auto;
+}
+.page { display: none; }
+.page.active { display: block; }
+
+/* ─── TOP BAR ─── */
+.topbar {
+  display: flex; align-items: center; justify-content: space-between;
+  margin-bottom: 32px;
+}
+.page-title { font-family: var(--font); font-size: 26px; font-weight: 800; }
+.page-subtitle { font-size: 14px; color: var(--text2); margin-top: 4px; }
+.topbar-actions { display: flex; gap: 12px; align-items: center; }
+
+/* ─── STAT CARDS ─── */
+.stats-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 20px; margin-bottom: 28px; }
+.stat-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 24px;
+  transition: all .3s;
+}
+.stat-card:hover { border-color: var(--border2); transform: translateY(-2px); }
+.stat-label { font-family: var(--font); font-size: 11px; font-weight: 700; color: var(--text3); letter-spacing: 1.5px; text-transform: uppercase; margin-bottom: 12px; }
+.stat-value { font-family: var(--font); font-size: 32px; font-weight: 800; color: var(--white); line-height: 1; }
+.stat-sub { font-size: 12px; color: var(--text2); margin-top: 8px; }
+.stat-trend { font-size: 12px; margin-top: 4px; font-weight: 600; }
+.stat-trend.up { color: var(--green); }
+.stat-trend.down { color: var(--red); }
+
+/* ─── CARDS ─── */
+.card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 28px;
+}
+.card-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 22px; }
+.card-title { font-family: var(--font); font-size: 16px; font-weight: 700; }
+.card-subtitle { font-size: 13px; color: var(--text2); margin-top: 3px; }
+.grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+.grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; }
+
+/* ─── TABLES ─── */
+.table-wrap { overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; }
+th { font-family: var(--font); font-size: 11px; font-weight: 700; color: var(--text3); letter-spacing: 1.5px; text-transform: uppercase; padding: 12px 16px; text-align: left; border-bottom: 1px solid var(--border); }
+td { padding: 14px 16px; font-size: 14px; border-bottom: 1px solid var(--border); }
+tr:last-child td { border-bottom: none; }
+tr:hover td { background: rgba(255,255,255,0.02); }
+.badge {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 4px 10px; border-radius: 100px;
+  font-family: var(--font); font-size: 11px; font-weight: 700; letter-spacing: .5px;
+}
+.badge-green { background: rgba(76,175,80,0.15); color: var(--green2); }
+.badge-amber { background: rgba(255,179,0,0.15); color: var(--amber); }
+.badge-red { background: rgba(239,83,80,0.15); color: var(--red); }
+.badge-cyan { background: rgba(79,195,247,0.15); color: var(--cyan); }
+.badge-purple { background: rgba(139,92,246,0.15); color: var(--purple); }
+
+/* ─── BUTTONS ─── */
+.btn {
+  display: inline-flex; align-items: center; gap: 8px;
+  padding: 10px 18px; border-radius: var(--radius);
+  font-family: var(--font); font-size: 13px; font-weight: 700;
+  cursor: pointer; transition: all .2s; border: none; letter-spacing: .5px;
+}
+.btn-sm { padding: 7px 14px; font-size: 12px; }
+.btn-cyan { background: var(--cyan); color: var(--bg); }
+.btn-cyan:hover { opacity: .85; }
+.btn-outline { background: transparent; border: 1px solid var(--border2); color: var(--cyan); }
+.btn-outline:hover { background: var(--cyan-dim); }
+.btn-danger { background: rgba(239,83,80,0.15); border: 1px solid rgba(239,83,80,0.3); color: var(--red); }
+.btn-danger:hover { background: rgba(239,83,80,0.25); }
+.btn-ghost { background: var(--surface2); border: 1px solid var(--border); color: var(--white); }
+.btn-ghost:hover { border-color: var(--border2); }
+
+/* ─── PROGRESS BARS ─── */
+.progress-wrap { margin-bottom: 12px; }
+.progress-meta { display: flex; justify-content: space-between; font-size: 13px; color: var(--text2); margin-bottom: 6px; }
+.progress-bar { height: 6px; background: var(--surface2); border-radius: 100px; overflow: hidden; }
+.progress-fill { height: 100%; border-radius: 100px; background: linear-gradient(90deg, var(--cyan), var(--cyan2)); transition: width .8s; }
+.progress-fill.amber { background: linear-gradient(90deg, var(--amber), #FF6F00); }
+
+/* ─── MINI CHART ─── */
+.mini-chart { display: flex; align-items: flex-end; gap: 4px; height: 60px; margin-top: 12px; }
+.mini-bar { flex: 1; border-radius: 4px 4px 0 0; transition: all .3s; cursor: pointer; }
+.mini-bar:hover { opacity: .7; }
+
+/* ─── PHONE NUMBERS ─── */
+.phone-card {
+  background: var(--bg3); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 18px 20px;
+  display: flex; align-items: center; gap: 16px;
+  margin-bottom: 12px; transition: all .2s;
+}
+.phone-card:hover { border-color: var(--border2); }
+.phone-icon { width: 40px; height: 40px; border-radius: 10px; background: var(--cyan-dim); display: flex; align-items: center; justify-content: center; font-size: 18px; flex-shrink: 0; }
+.phone-num { font-family: var(--font); font-size: 16px; font-weight: 700; }
+.phone-meta { font-size: 12px; color: var(--text2); margin-top: 2px; }
+.phone-actions { margin-left: auto; display: flex; gap: 8px; }
+
+/* ─── API KEYS ─── */
+.api-key-row {
+  background: var(--bg3); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 16px 20px;
+  display: flex; align-items: center; gap: 14px;
+  margin-bottom: 10px;
+}
+.api-key-text { font-family: 'Courier New', monospace; font-size: 13px; color: var(--text2); flex: 1; background: transparent; border: none; outline: none; }
+.copy-btn { background: none; border: none; color: var(--text3); cursor: pointer; font-size: 16px; padding: 4px; transition: color .2s; }
+.copy-btn:hover { color: var(--cyan); }
+
+/* ─── AFFILIATE ─── */
+.tier-cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; margin-bottom: 24px; }
+.tier-card {
+  border: 1px solid var(--border); border-radius: var(--radius-lg);
+  padding: 24px 20px; text-align: center; background: var(--surface);
+  transition: all .3s;
+}
+.tier-card.active-tier { border-color: var(--cyan); background: var(--cyan-dim); }
+.tier-icon { font-size: 32px; margin-bottom: 10px; }
+.tier-name { font-family: var(--font); font-size: 15px; font-weight: 700; margin-bottom: 6px; }
+.tier-rate { font-family: var(--font); font-size: 28px; font-weight: 800; color: var(--cyan); }
+.tier-plan { font-size: 12px; color: var(--text2); margin-top: 4px; }
+.affiliate-link-box {
+  background: var(--bg3); border: 1px solid var(--border2);
+  border-radius: var(--radius); padding: 16px 20px;
+  display: flex; align-items: center; gap: 14px;
+}
+.affiliate-link-text { font-size: 14px; color: var(--cyan); flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ─── COUPON ADMIN ─── */
+.coupon-row-item {
+  display: flex; align-items: center; gap: 14px;
+  background: var(--bg3); border: 1px solid var(--border);
+  border-radius: var(--radius); padding: 14px 18px; margin-bottom: 10px;
+}
+.coupon-code { font-family: var(--font); font-size: 15px; font-weight: 700; letter-spacing: 2px; }
+.coupon-details { flex: 1; display: flex; gap: 20px; }
+.coupon-stat { font-size: 12px; }
+.coupon-stat span { display: block; color: var(--text3); font-size: 10px; letter-spacing: 1px; text-transform: uppercase; }
+
+/* ─── BILLING ─── */
+.invoice-row {
+  display: flex; align-items: center; gap: 14px;
+  padding: 14px 0; border-bottom: 1px solid var(--border);
+}
+.invoice-row:last-child { border-bottom: none; }
+.invoice-icon { width: 36px; height: 36px; background: var(--cyan-dim); border-radius: 8px; display: flex; align-items: center; justify-content: center; font-size: 16px; flex-shrink: 0; }
+.invoice-desc { flex: 1; }
+.invoice-name { font-size: 14px; font-weight: 500; }
+.invoice-date { font-size: 12px; color: var(--text3); margin-top: 2px; }
+.invoice-amount { font-family: var(--font); font-size: 15px; font-weight: 700; color: var(--white); }
+
+/* ─── PLAN COMPARE ─── */
+.plan-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 20px; }
+.plan-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 32px 26px;
+  position: relative;
+}
+.plan-card.current { border-color: var(--cyan); box-shadow: 0 0 40px rgba(79,195,247,0.1); }
+.plan-badge-corner { position: absolute; top: 16px; right: 16px; }
+.plan-name2 { font-family: var(--font); font-size: 14px; font-weight: 700; color: var(--text2); letter-spacing: 2px; text-transform: uppercase; margin-bottom: 14px; }
+.plan-price2 { font-family: var(--font); font-size: 44px; font-weight: 800; line-height: 1; margin-bottom: 4px; }
+.plan-price2 sup { font-size: 20px; vertical-align: top; margin-top: 10px; display: inline-block; }
+.plan-period { font-size: 13px; color: var(--text3); margin-bottom: 24px; }
+.plan-feat { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--text2); padding: 7px 0; }
+.plan-feat::before { content: '✓'; color: var(--green); font-weight: 700; font-size: 12px; flex-shrink: 0; }
+.plan-cta { margin-top: 24px; }
+
+/* ─── NOTIFICATIONS ─── */
+.toast {
+  position: fixed; bottom: 24px; right: 24px;
+  background: var(--bg3); border: 1px solid var(--border2);
+  border-radius: var(--radius); padding: 14px 20px;
+  font-size: 14px; z-index: 9999;
+  transform: translateY(100px); opacity: 0;
+  transition: all .3s;
+  display: flex; align-items: center; gap: 10px;
+  min-width: 280px;
+  box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+}
+.toast.show { transform: translateY(0); opacity: 1; }
+.toast-icon { font-size: 18px; }
+
+/* ─── TOGGLE ─── */
+.toggle-wrap { display: flex; align-items: center; gap: 10px; }
+.toggle { position: relative; width: 40px; height: 22px; flex-shrink: 0; }
+.toggle input { opacity: 0; width: 0; height: 0; }
+.toggle-slider {
+  position: absolute; inset: 0; background: var(--surface2);
+  border-radius: 100px; cursor: pointer; transition: all .3s;
+  border: 1px solid var(--border);
+}
+.toggle-slider::before {
+  content: ''; position: absolute;
+  width: 16px; height: 16px; border-radius: 50%;
+  background: var(--text3); left: 2px; top: 2px;
+  transition: all .3s;
+}
+.toggle input:checked + .toggle-slider { background: var(--cyan-dim); border-color: var(--cyan); }
+.toggle input:checked + .toggle-slider::before { transform: translateX(18px); background: var(--cyan); }
+.toggle-label { font-size: 13px; color: var(--text2); }
+
+/* ─── ACTIVITY FEED ─── */
+.activity-item { display: flex; gap: 14px; padding: 12px 0; border-bottom: 1px solid var(--border); }
+.activity-item:last-child { border-bottom: none; }
+.activity-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--cyan); flex-shrink: 0; margin-top: 6px; }
+.activity-dot.green { background: var(--green); }
+.activity-dot.amber { background: var(--amber); }
+.activity-text { font-size: 13px; color: var(--text2); flex: 1; }
+.activity-text strong { color: var(--white); }
+.activity-time { font-size: 11px; color: var(--text3); white-space: nowrap; }
+
+/* ─── SCROLL BAR ─── */
+::-webkit-scrollbar { width: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 3px; }
+
+/* ─── RESPONSIVE ─── */
+@media (max-width: 1100px) {
+  .stats-grid { grid-template-columns: repeat(2, 1fr); }
+  .tier-cards, .plan-grid { grid-template-columns: 1fr; }
+}
+@media (max-width: 768px) {
+  .sidebar { transform: translateX(-100%); }
+  .main-content { margin-left: 0; padding: 16px; }
+  .stats-grid { grid-template-columns: 1fr 1fr; }
+  .grid-2, .grid-3 { grid-template-columns: 1fr; }
+}
+
+/* ─── MODAL ─── */
+.modal-overlay2 {
+  position: fixed; inset: 0; z-index: 1000;
+  background: rgba(0,0,0,0.75); backdrop-filter: blur(8px);
+  display: flex; align-items: center; justify-content: center;
+  opacity: 0; pointer-events: none; transition: opacity .3s;
+}
+.modal-overlay2.open { opacity: 1; pointer-events: all; }
+.modal2 {
+  background: var(--bg3); border: 1px solid var(--border2);
+  border-radius: var(--radius-lg); padding: 40px;
+  width: 100%; max-width: 500px;
+  box-shadow: 0 40px 120px rgba(0,0,0,0.6);
+  transform: translateY(20px); transition: transform .3s;
+}
+.modal-overlay2.open .modal2 { transform: translateY(0); }
+.modal-title { font-family: var(--font); font-size: 20px; font-weight: 800; margin-bottom: 24px; }
+.modal-close2 { float: right; background: none; border: none; color: var(--text2); font-size: 20px; cursor: pointer; margin-top: -4px; }
+
+/* ─── SUMMARY BOX ─── */
+.summary-box {
+  background: var(--bg3); border: 1px solid var(--border2);
+  border-radius: var(--radius); padding: 16px 20px;
+  margin-top: 16px; font-size: 13px; color: var(--text2);
+}
+.summary-row { display: flex; justify-content: space-between; padding: 5px 0; }
+.summary-row.total { border-top: 1px solid var(--border); margin-top: 8px; padding-top: 10px; font-family: var(--font); font-weight: 700; color: var(--white); font-size: 15px; }
+
+/* ─── INPUT COPY ─── */
+.input-copy { position: relative; }
+.input-copy .form-input { padding-right: 48px; }
+.input-copy .copy-inside { position: absolute; right: 12px; top: 50%; transform: translateY(-50%); background: none; border: none; color: var(--text3); cursor: pointer; font-size: 16px; }
+.input-copy .copy-inside:hover { color: var(--cyan); }
+</style>
+</head>
+<body>
+
+<!-- ═══════════ AUTH SCREEN ═══════════ -->
+<div id="authScreen">
+  <div class="auth-card" id="authCard">
+    <div class="auth-logo">
+      <div class="auth-logo-icon">📞</div>
+      <div class="auth-logo-text">Buddy<span>Call</span>AI</div>
+    </div>
+
+    <div class="auth-tabs">
+      <button class="auth-tab active" onclick="switchTab('login')">Sign In</button>
+      <button class="auth-tab" onclick="switchTab('signup')">Create Account</button>
+    </div>
+
+    <!-- LOGIN PANEL -->
+    <div id="loginPanel">
+      <div class="form-group">
+        <label class="form-label">Email Address</label>
+        <input class="form-input" type="email" id="loginEmail" placeholder="you@example.com" value="demo@buddycallai.com"/>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Password</label>
+        <input class="form-input" type="password" id="loginPass" placeholder="••••••••" value="demo1234"/>
+      </div>
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px">
+        <label class="toggle-wrap"><label class="toggle"><input type="checkbox" checked/><span class="toggle-slider"></span></label><span class="toggle-label">Remember me</span></label>
+        <a href="#" style="font-size:13px;color:var(--cyan);text-decoration:none">Forgot password?</a>
+      </div>
+      <button class="btn-primary" onclick="doLogin()">Sign In to Dashboard</button>
+      <p class="auth-note" style="margin-top:12px">Demo: demo@buddycallai.com / demo1234</p>
+    </div>
+
+    <!-- SIGNUP PANEL -->
+    <div id="signupPanel" style="display:none">
+      <div class="form-row">
+        <div class="form-group">
+          <label class="form-label">First Name</label>
+          <input class="form-input" type="text" placeholder="John"/>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Last Name</label>
+          <input class="form-input" type="text" placeholder="Smith"/>
+        </div>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Email Address</label>
+        <input class="form-input" type="email" placeholder="you@example.com"/>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Password</label>
+        <input class="form-input" type="password" placeholder="Min 8 characters"/>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Phone Number</label>
+        <input class="form-input" type="tel" placeholder="+1 (555) 000-0000"/>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Select Plan</label>
+        <div class="plan-picker">
+          <div class="plan-opt" onclick="selectPlan(this,'starter')">
+            <div class="po-name">Starter</div>
+            <div class="po-price">$9/mo</div>
+          </div>
+          <div class="plan-opt selected" onclick="selectPlan(this,'pro')">
+            <div class="po-name">Pro</div>
+            <div class="po-price">$29/mo</div>
+          </div>
+          <div class="plan-opt" onclick="selectPlan(this,'gold')">
+            <div class="po-name">Gold</div>
+            <div class="po-price">$79/mo</div>
+          </div>
+        </div>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Coupon / Referral Code <span style="color:var(--text3);font-weight:400">(optional)</span></label>
+        <div class="coupon-row">
+          <div class="form-group">
+            <input class="form-input" type="text" id="signupCoupon" placeholder="e.g. BUDDY20 or SAVE10"/>
+          </div>
+          <button class="btn-apply" onclick="applyCoupon()">Apply</button>
+        </div>
+        <div class="coupon-success" id="couponMsg">✓ Code applied — 20% off first month!</div>
+      </div>
+      <div class="summary-box" id="orderSummary">
+        <div class="summary-row"><span>Pro Plan</span><span>$29.00/mo</span></div>
+        <div class="summary-row"><span>Discount</span><span style="color:var(--green)" id="discountLine">$0.00</span></div>
+        <div class="summary-row total"><span>Total Today</span><span id="totalLine">$29.00</span></div>
+      </div>
+      <button class="btn-primary" style="margin-top:18px" onclick="doSignup()">Start Free Trial →</button>
+      <p class="auth-note">First 1 minute free · No credit card charged today<br>By signing up you agree to our <a href="#">Terms</a> & <a href="#">Privacy Policy</a></p>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════ APP SCREEN ═══════════ -->
+<div id="appScreen">
+  <div class="app-body">
+
+    <!-- SIDEBAR -->
+    <nav class="sidebar">
+      <div class="sidebar-logo">
+        <div class="sidebar-logo-icon">📞</div>
+        <div class="sidebar-logo-text">Buddy<span>Call</span>AI</div>
+      </div>
+      <div class="sidebar-nav">
+        <div class="nav-section-label">Main</div>
+        <button class="nav-item active" onclick="showPage('dashboard', this)"><span class="nav-icon">🏠</span>Dashboard</button>
+        <button class="nav-item" onclick="showPage('calls', this)"><span class="nav-icon">📞</span>Call History</button>
+        <button class="nav-item" onclick="showPage('numbers', this)"><span class="nav-icon">📱</span>Phone Numbers</button>
+        <button class="nav-item" onclick="showPage('transcripts', this)"><span class="nav-icon">📄</span>Transcripts<span class="nav-badge">3</span></button>
+
+        <div class="nav-section-label">Monetization</div>
+        <button class="nav-item" onclick="showPage('billing', this)"><span class="nav-icon">💳</span>Billing & Plans</button>
+        <button class="nav-item" onclick="showPage('coupons', this)"><span class="nav-icon">🏷️</span>Coupons</button>
+        <button class="nav-item" onclick="showPage('affiliate', this)"><span class="nav-icon">🤝</span>Affiliate Program</button>
+
+        <div class="nav-section-label">Developer</div>
+        <button class="nav-item" onclick="showPage('api', this)"><span class="nav-icon">⚡</span>API & Webhooks</button>
+
+        <div class="nav-section-label">Account</div>
+        <button class="nav-item" onclick="showPage('settings', this)"><span class="nav-icon">⚙️</span>Settings</button>
+      </div>
+      <div class="sidebar-bottom">
+        <div class="user-pill" onclick="showPage('settings', document.querySelector('[onclick*=settings]'))">
+          <div class="user-avatar" id="sidebarAvatar">JS</div>
+          <div class="user-info">
+            <div class="user-name" id="sidebarName">John Smith</div>
+            <div class="user-plan">Pro Plan</div>
+          </div>
+          <button class="logout-btn" onclick="event.stopPropagation();doLogout()" title="Sign Out">⏻</button>
+        </div>
+      </div>
+    </nav>
+
+    <!-- MAIN CONTENT -->
+    <main class="main-content">
+
+      <!-- ── DASHBOARD ── -->
+      <div class="page active" id="page-dashboard">
+        <div class="topbar">
+          <div>
+            <div class="page-title">Good morning, John 👋</div>
+            <div class="page-subtitle">Here's what's happening with your account today.</div>
+          </div>
+          <div class="topbar-actions">
+            <button class="btn btn-outline" onclick="showPage('numbers', document.querySelector('[onclick*=numbers]'))">📱 Manage Numbers</button>
+            <button class="btn btn-cyan" onclick="openCallModal()">📞 Make a Call</button>
+          </div>
+        </div>
+
+        <div class="stats-grid">
+          <div class="stat-card">
+            <div class="stat-label">Minutes Used</div>
+            <div class="stat-value">74</div>
+            <div class="stat-sub">of 120 min this month</div>
+            <div class="stat-trend up">↑ 18% vs last month</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-label">Total Calls</div>
+            <div class="stat-value">38</div>
+            <div class="stat-sub">this billing cycle</div>
+            <div class="stat-trend up">↑ 12 new this week</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-label">Affiliate Earnings</div>
+            <div class="stat-value">$14.21</div>
+            <div class="stat-sub">3 active referrals</div>
+            <div class="stat-trend up">↑ $2.03 this month</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-label">Next Bill</div>
+            <div class="stat-value">$29</div>
+            <div class="stat-sub">Apr 15, 2026 · Pro Plan</div>
+            <div class="stat-trend" style="color:var(--text2)">Auto-renews monthly</div>
+          </div>
+        </div>
+
+        <div class="grid-2" style="margin-bottom:20px">
+          <div class="card">
+            <div class="card-header">
+              <div>
+                <div class="card-title">Usage This Month</div>
+                <div class="card-subtitle">Voice minutes consumed</div>
+              </div>
+              <span class="badge badge-cyan">PRO</span>
+            </div>
+            <div class="progress-wrap">
+              <div class="progress-meta"><span>Minutes</span><span>74 / 120</span></div>
+              <div class="progress-bar"><div class="progress-fill" style="width:62%"></div></div>
+            </div>
+            <div class="progress-wrap">
+              <div class="progress-meta"><span>Phone Numbers</span><span>2 / 3</span></div>
+              <div class="progress-bar"><div class="progress-fill" style="width:67%"></div></div>
+            </div>
+            <div class="progress-wrap">
+              <div class="progress-meta"><span>API Calls</span><span>240 / 500</span></div>
+              <div class="progress-bar"><div class="progress-fill amber" style="width:48%"></div></div>
+            </div>
+            <div style="margin-top:16px;font-size:13px;color:var(--text2)">46 minutes remaining · <a href="#" onclick="showPage('billing', document.querySelector('[onclick*=billing]'));return false;" style="color:var(--cyan);text-decoration:none">Upgrade for more →</a></div>
+          </div>
+          <div class="card">
+            <div class="card-header">
+              <div class="card-title">Call Volume (7 days)</div>
+            </div>
+            <div class="mini-chart" id="miniChart"></div>
+            <div style="margin-top:12px;display:flex;gap:20px">
+              <div style="font-size:13px;color:var(--text2)"><span style="color:var(--white);font-weight:600">6.2</span> avg min/call</div>
+              <div style="font-size:13px;color:var(--text2)"><span style="color:var(--white);font-weight:600">94%</span> call success</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="grid-2">
+          <div class="card">
+            <div class="card-header">
+              <div class="card-title">Recent Calls</div>
+              <button class="btn btn-sm btn-ghost" onclick="showPage('calls', document.querySelector('[onclick*=calls]'))">View All</button>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead><tr><th>Number</th><th>Duration</th><th>Date</th><th>Status</th></tr></thead>
+                <tbody>
+                  <tr><td>+1 (866) 58ASK-AI</td><td>4m 32s</td><td>Mar 25</td><td><span class="badge badge-green">Completed</span></td></tr>
+                  <tr><td>+1 (866) 58ASK-AI</td><td>7m 14s</td><td>Mar 24</td><td><span class="badge badge-green">Completed</span></td></tr>
+                  <tr><td>+1 (866) 58ASK-AI</td><td>1m 02s</td><td>Mar 23</td><td><span class="badge badge-amber">Short</span></td></tr>
+                  <tr><td>+1 (844) BUDDY-AI</td><td>—</td><td>Mar 22</td><td><span class="badge badge-red">Failed</span></td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+          <div class="card">
+            <div class="card-header">
+              <div class="card-title">Activity Feed</div>
+            </div>
+            <div class="activity-item"><div class="activity-dot green"></div><div class="activity-text"><strong>New referral</strong> signed up via your link — earning $2.03/mo</div><div class="activity-time">2h ago</div></div>
+            <div class="activity-item"><div class="activity-dot"></div><div class="activity-text"><strong>Transcript</strong> emailed for 7m call on Mar 24</div><div class="activity-time">Yesterday</div></div>
+            <div class="activity-item"><div class="activity-dot amber"></div><div class="activity-text"><strong>Coupon BUDDY20</strong> used — 20% discount applied</div><div class="activity-time">Mar 22</div></div>
+            <div class="activity-item"><div class="activity-dot green"></div><div class="activity-text"><strong>Payment</strong> of $29.00 processed successfully</div><div class="activity-time">Mar 15</div></div>
+            <div class="activity-item"><div class="activity-dot"></div><div class="activity-text"><strong>API key</strong> generated for production environment</div><div class="activity-time">Mar 10</div></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── CALL HISTORY ── -->
+      <div class="page" id="page-calls">
+        <div class="topbar">
+          <div>
+            <div class="page-title">Call History</div>
+            <div class="page-subtitle">All your AI phone conversations</div>
+          </div>
+          <button class="btn btn-outline">⬇ Export CSV</button>
+        </div>
+        <div class="card">
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Call ID</th><th>Phone Number</th><th>Date & Time</th><th>Duration</th><th>Cost</th><th>Status</th><th>Actions</th></tr></thead>
+              <tbody>
+                <tr><td>#4421</td><td>+1 (866) 582-7524</td><td>Mar 25, 2026 · 09:14 AM</td><td>4m 32s</td><td>$0.23</td><td><span class="badge badge-green">Completed</span></td><td><button class="btn btn-sm btn-ghost" onclick="showPage('transcripts', document.querySelector('[onclick*=transcripts]'))">📄 View</button></td></tr>
+                <tr><td>#4420</td><td>+1 (866) 582-7524</td><td>Mar 24, 2026 · 03:41 PM</td><td>7m 14s</td><td>$0.36</td><td><span class="badge badge-green">Completed</span></td><td><button class="btn btn-sm btn-ghost">📄 View</button></td></tr>
+                <tr><td>#4419</td><td>+1 (866) 582-7524</td><td>Mar 23, 2026 · 11:02 AM</td><td>1m 02s</td><td>$0.06</td><td><span class="badge badge-amber">Short</span></td><td><button class="btn btn-sm btn-ghost">📄 View</button></td></tr>
+                <tr><td>#4418</td><td>+1 (844) 288-3924</td><td>Mar 22, 2026 · 08:55 PM</td><td>—</td><td>$0.00</td><td><span class="badge badge-red">Failed</span></td><td><button class="btn btn-sm btn-ghost">📄 View</button></td></tr>
+                <tr><td>#4417</td><td>+1 (866) 582-7524</td><td>Mar 21, 2026 · 02:10 PM</td><td>9m 44s</td><td>$0.49</td><td><span class="badge badge-green">Completed</span></td><td><button class="btn btn-sm btn-ghost">📄 View</button></td></tr>
+                <tr><td>#4416</td><td>+1 (866) 582-7524</td><td>Mar 20, 2026 · 10:30 AM</td><td>3m 17s</td><td>$0.16</td><td><span class="badge badge-green">Completed</span></td><td><button class="btn btn-sm btn-ghost">📄 View</button></td></tr>
+                <tr><td>#4415</td><td>+1 (844) 288-3924</td><td>Mar 19, 2026 · 07:22 PM</td><td>5m 56s</td><td>$0.30</td><td><span class="badge badge-green">Completed</span></td><td><button class="btn btn-sm btn-ghost">📄 View</button></td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── PHONE NUMBERS ── -->
+      <div class="page" id="page-numbers">
+        <div class="topbar">
+          <div>
+            <div class="page-title">Phone Numbers</div>
+            <div class="page-subtitle">2 of 3 numbers active — Pro Plan</div>
+          </div>
+          <button class="btn btn-cyan" onclick="showToast('📱 Number provisioning opens Apr 1, 2026')">+ Add Number</button>
+        </div>
+        <div class="phone-card">
+          <div class="phone-icon">📞</div>
+          <div>
+            <div class="phone-num">+1 (866) 582-7524</div>
+            <div class="phone-meta">Primary · Toll-Free · USA + Canada · Active since Mar 1, 2026</div>
+          </div>
+          <span class="badge badge-green" style="margin-left:auto;margin-right:12px">● Active</span>
+          <div class="phone-actions">
+            <button class="btn btn-sm btn-ghost">⚙ Settings</button>
+            <button class="btn btn-sm btn-ghost">📊 Stats</button>
+          </div>
+        </div>
+        <div class="phone-card">
+          <div class="phone-icon">📱</div>
+          <div>
+            <div class="phone-num">+1 (844) 288-3924</div>
+            <div class="phone-meta">Secondary · Local · USA · Active since Mar 10, 2026</div>
+          </div>
+          <span class="badge badge-green" style="margin-left:auto;margin-right:12px">● Active</span>
+          <div class="phone-actions">
+            <button class="btn btn-sm btn-ghost">⚙ Settings</button>
+            <button class="btn btn-sm btn-ghost">📊 Stats</button>
+          </div>
+        </div>
+        <div class="phone-card" style="opacity:.5;border-style:dashed">
+          <div class="phone-icon" style="opacity:.4">＋</div>
+          <div>
+            <div class="phone-num" style="color:var(--text2)">Add a 3rd number</div>
+            <div class="phone-meta">Available on Pro Plan</div>
+          </div>
+          <button class="btn btn-sm btn-outline" style="margin-left:auto" onclick="showToast('📱 Number provisioning opens Apr 1, 2026')">Provision</button>
+        </div>
+        <div class="card" style="margin-top:24px">
+          <div class="card-title" style="margin-bottom:16px">Call Forwarding & IVR Settings</div>
+          <div class="grid-2" style="gap:16px">
+            <div>
+              <label class="form-label">Greeting Message</label>
+              <input class="form-input" value="Welcome to BuddyCallAI. How can I help you today?"/>
+            </div>
+            <div>
+              <label class="form-label">AI Voice</label>
+              <select class="form-input" style="cursor:pointer">
+                <option>Nova (Premium Female)</option>
+                <option>Orion (Premium Male)</option>
+                <option>Aria (Natural Female)</option>
+              </select>
+            </div>
+            <div>
+              <label class="form-label">Fallback Number</label>
+              <input class="form-input" placeholder="+1 (555) 000-0000"/>
+            </div>
+            <div>
+              <label class="form-label">Max Call Duration</label>
+              <select class="form-input" style="cursor:pointer">
+                <option>30 minutes</option>
+                <option>15 minutes</option>
+                <option selected>Unlimited</option>
+              </select>
+            </div>
+          </div>
+          <button class="btn btn-cyan" style="margin-top:20px" onclick="showToast('✓ Settings saved!')">Save Settings</button>
+        </div>
+      </div>
+
+      <!-- ── TRANSCRIPTS ── -->
+      <div class="page" id="page-transcripts">
+        <div class="topbar">
+          <div>
+            <div class="page-title">Transcripts</div>
+            <div class="page-subtitle">Call recordings & conversation logs</div>
+          </div>
+          <button class="btn btn-outline">⬇ Export All</button>
+        </div>
+        <div class="card">
+          <div class="card-title" style="margin-bottom:16px">Mar 25, 2026 · Call #4421 · 4m 32s</div>
+          <div style="background:var(--bg3);border-radius:var(--radius);padding:20px;font-size:14px;line-height:1.8;color:var(--text2)">
+            <p><strong style="color:var(--cyan)">AI:</strong> Welcome to BuddyCallAI! I'm your AI assistant. How can I help you today?</p>
+            <p style="margin-top:10px"><strong style="color:var(--white)">User:</strong> Hey, I need help planning a trip to Colombia next month.</p>
+            <p style="margin-top:10px"><strong style="color:var(--cyan)">AI:</strong> That sounds exciting! Colombia is a wonderful destination. I can help you plan your trip. What cities are you thinking about visiting — Bogotá, Cartagena, Medellín?</p>
+            <p style="margin-top:10px"><strong style="color:var(--white)">User:</strong> Probably Cartagena and Medellín. What are the best areas to stay?</p>
+            <p style="margin-top:10px"><strong style="color:var(--cyan)">AI:</strong> Great choices! In Cartagena, I recommend staying in the Walled City — it's the historic heart and walkable to everything. For Medellín, El Poblado is safe, modern and full of great restaurants. Would you like hotel recommendations or budget tips?</p>
+            <p style="margin-top:10px"><strong style="color:var(--white)">User:</strong> Both please! We're on a mid-range budget...</p>
+            <p style="margin-top:10px;color:var(--text3)">[Transcript continues for 3 more minutes...]</p>
+          </div>
+          <div style="margin-top:16px;display:flex;gap:12px">
+            <button class="btn btn-ghost">📧 Email Transcript</button>
+            <button class="btn btn-ghost">⬇ Download .txt</button>
+            <button class="btn btn-ghost">🔊 Play Recording</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── BILLING ── -->
+      <div class="page" id="page-billing">
+        <div class="topbar">
+          <div>
+            <div class="page-title">Billing & Plans</div>
+            <div class="page-subtitle">Manage your subscription and payment methods</div>
+          </div>
+        </div>
+
+        <div class="plan-grid" style="margin-bottom:28px">
+          <div class="plan-card">
+            <div class="plan-name2">Starter</div>
+            <div class="plan-price2"><sup>$</sup>9</div>
+            <div class="plan-period">/ month</div>
+            <div class="plan-feat">30 min / month</div>
+            <div class="plan-feat">1 phone number</div>
+            <div class="plan-feat">Call history</div>
+            <div class="plan-feat">Transcripts to email</div>
+            <div class="plan-cta"><button class="btn btn-ghost" style="width:100%">Downgrade</button></div>
+          </div>
+          <div class="plan-card current">
+            <div class="plan-badge-corner"><span class="badge badge-cyan">CURRENT</span></div>
+            <div class="plan-name2">Pro</div>
+            <div class="plan-price2"><sup>$</sup>29</div>
+            <div class="plan-period">/ month</div>
+            <div class="plan-feat">120 min / month</div>
+            <div class="plan-feat">3 phone numbers</div>
+            <div class="plan-feat">Premium voice</div>
+            <div class="plan-feat">Call history + transcripts</div>
+            <div class="plan-feat">Priority support</div>
+            <div class="plan-cta"><button class="btn btn-outline" style="width:100%;cursor:default">Active Plan</button></div>
+          </div>
+          <div class="plan-card">
+            <div class="plan-name2">Gold</div>
+            <div class="plan-price2"><sup>$</sup>79</div>
+            <div class="plan-period">/ month</div>
+            <div class="plan-feat">600 min / month</div>
+            <div class="plan-feat">6 phone numbers</div>
+            <div class="plan-feat">Ultra HD voice</div>
+            <div class="plan-feat">Transcripts + history</div>
+            <div class="plan-feat">API access</div>
+            <div class="plan-feat">Dedicated support</div>
+            <div class="plan-cta"><button class="btn btn-cyan" style="width:100%" onclick="showToast('🚀 Upgrading to Gold Plan...')">Upgrade to Gold</button></div>
+          </div>
+        </div>
+
+        <div class="grid-2">
+          <div class="card">
+            <div class="card-title" style="margin-bottom:16px">Payment Method</div>
+            <div style="background:var(--bg3);border:1px solid var(--border);border-radius:var(--radius);padding:16px 20px;display:flex;align-items:center;gap:14px;margin-bottom:16px">
+              <div style="font-size:28px">💳</div>
+              <div>
+                <div style="font-size:14px;font-weight:500">Visa ending in 4242</div>
+                <div style="font-size:12px;color:var(--text3)">Expires 08 / 2028</div>
+              </div>
+              <span class="badge badge-green" style="margin-left:auto">Default</span>
+            </div>
+            <button class="btn btn-ghost" onclick="showToast('💳 Card management opens Apr 1, 2026')">+ Add Payment Method</button>
+            <div class="form-group" style="margin-top:20px">
+              <label class="form-label">Apply Coupon Code</label>
+              <div class="coupon-row">
+                <div class="form-group"><input class="form-input" placeholder="Enter code..." id="billingCoupon"/></div>
+                <button class="btn-apply" onclick="applyBillingCoupon()">Apply</button>
+              </div>
+            </div>
+          </div>
+          <div class="card">
+            <div class="card-header">
+              <div class="card-title">Invoice History</div>
+              <button class="btn btn-sm btn-ghost">View All</button>
+            </div>
+            <div class="invoice-row">
+              <div class="invoice-icon">🧾</div>
+              <div class="invoice-desc">
+                <div class="invoice-name">Pro Plan — March 2026</div>
+                <div class="invoice-date">Mar 15, 2026</div>
+              </div>
+              <div>
+                <div class="invoice-amount">$29.00</div>
+                <span class="badge badge-green" style="font-size:10px">Paid</span>
+              </div>
+            </div>
+            <div class="invoice-row">
+              <div class="invoice-icon">🧾</div>
+              <div class="invoice-desc">
+                <div class="invoice-name">Pro Plan — February 2026</div>
+                <div class="invoice-date">Feb 15, 2026</div>
+              </div>
+              <div>
+                <div class="invoice-amount">$23.20</div>
+                <span class="badge badge-purple" style="font-size:10px">Discounted</span>
+              </div>
+            </div>
+            <div class="invoice-row">
+              <div class="invoice-icon">🧾</div>
+              <div class="invoice-desc">
+                <div class="invoice-name">Pro Plan — January 2026</div>
+                <div class="invoice-date">Jan 15, 2026</div>
+              </div>
+              <div>
+                <div class="invoice-amount">$29.00</div>
+                <span class="badge badge-green" style="font-size:10px">Paid</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── COUPONS ── -->
+      <div class="page" id="page-coupons">
+        <div class="topbar">
+          <div>
+            <div class="page-title">Coupon Manager</div>
+            <div class="page-subtitle">Create and track promotional discount codes</div>
+          </div>
+          <button class="btn btn-cyan" onclick="openCouponModal()">+ Create Coupon</button>
+        </div>
+        <div class="grid-2" style="margin-bottom:24px">
+          <div class="stat-card"><div class="stat-label">Active Coupons</div><div class="stat-value">4</div><div class="stat-sub">across all campaigns</div></div>
+          <div class="stat-card"><div class="stat-label">Total Redemptions</div><div class="stat-value">47</div><div class="stat-sub">$312 in discounts given</div></div>
+        </div>
+        <div class="card">
+          <div class="card-title" style="margin-bottom:16px">Active Coupon Codes</div>
+          <div class="coupon-row-item">
+            <div class="coupon-code" style="color:var(--cyan)">BUDDY20</div>
+            <div class="coupon-details">
+              <div class="coupon-stat">20% off<span>Discount</span></div>
+              <div class="coupon-stat">First month<span>Applies To</span></div>
+              <div class="coupon-stat">23 uses<span>Redemptions</span></div>
+              <div class="coupon-stat">Apr 30, 2026<span>Expires</span></div>
+            </div>
+            <span class="badge badge-green">Active</span>
+            <button class="btn btn-sm btn-danger">Deactivate</button>
+          </div>
+          <div class="coupon-row-item">
+            <div class="coupon-code" style="color:var(--amber)">SAVE10</div>
+            <div class="coupon-details">
+              <div class="coupon-stat">10% off<span>Discount</span></div>
+              <div class="coupon-stat">All plans<span>Applies To</span></div>
+              <div class="coupon-stat">14 uses<span>Redemptions</span></div>
+              <div class="coupon-stat">Dec 31, 2026<span>Expires</span></div>
+            </div>
+            <span class="badge badge-green">Active</span>
+            <button class="btn btn-sm btn-danger">Deactivate</button>
+          </div>
+          <div class="coupon-row-item">
+            <div class="coupon-code" style="color:var(--purple)">GOLD50</div>
+            <div class="coupon-details">
+              <div class="coupon-stat">$50 off<span>Discount</span></div>
+              <div class="coupon-stat">Gold only<span>Applies To</span></div>
+              <div class="coupon-stat">7 uses<span>Redemptions</span></div>
+              <div class="coupon-stat">May 1, 2026<span>Expires</span></div>
+            </div>
+            <span class="badge badge-green">Active</span>
+            <button class="btn btn-sm btn-danger">Deactivate</button>
+          </div>
+          <div class="coupon-row-item" style="opacity:.55">
+            <div class="coupon-code" style="color:var(--text2)">LAUNCH99</div>
+            <div class="coupon-details">
+              <div class="coupon-stat">$99 off<span>Discount</span></div>
+              <div class="coupon-stat">Annual Gold<span>Applies To</span></div>
+              <div class="coupon-stat">3 uses<span>Redemptions</span></div>
+              <div class="coupon-stat">Expired<span>Status</span></div>
+            </div>
+            <span class="badge badge-red">Expired</span>
+            <button class="btn btn-sm btn-ghost">Renew</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── AFFILIATE ── -->
+      <div class="page" id="page-affiliate">
+        <div class="topbar">
+          <div>
+            <div class="page-title">Affiliate Program</div>
+            <div class="page-subtitle">Earn recurring commissions by referring new users</div>
+          </div>
+          <button class="btn btn-cyan" onclick="showToast('📤 Share link copied!')">📤 Share Your Link</button>
+        </div>
+
+        <div class="stats-grid" style="margin-bottom:24px">
+          <div class="stat-card"><div class="stat-label">Total Earned</div><div class="stat-value">$14.21</div><div class="stat-sub">lifetime commissions</div></div>
+          <div class="stat-card"><div class="stat-label">Active Referrals</div><div class="stat-value">3</div><div class="stat-sub">subscribed users</div></div>
+          <div class="stat-card"><div class="stat-label">Monthly Recurring</div><div class="stat-value">$4.51</div><div class="stat-sub">recurring/month</div></div>
+          <div class="stat-card"><div class="stat-label">Next Payout</div><div class="stat-value">Apr 1</div><div class="stat-sub">via PayPal / bank</div></div>
+        </div>
+
+        <div class="tier-cards">
+          <div class="tier-card">
+            <div class="tier-icon">🥉</div>
+            <div class="tier-name">Starter Referral</div>
+            <div class="tier-rate">5%</div>
+            <div class="tier-plan">= $0.45/mo per user</div>
+          </div>
+          <div class="tier-card active-tier">
+            <div class="tier-icon">🥈</div>
+            <div class="tier-name">Pro Referral</div>
+            <div class="tier-rate">7%</div>
+            <div class="tier-plan">= $2.03/mo per user</div>
+          </div>
+          <div class="tier-card">
+            <div class="tier-icon">🥇</div>
+            <div class="tier-name">Gold Referral</div>
+            <div class="tier-rate">9%</div>
+            <div class="tier-plan">= $7.11/mo per user</div>
+          </div>
+        </div>
+
+        <div class="grid-2">
+          <div class="card">
+            <div class="card-title" style="margin-bottom:16px">Your Affiliate Link</div>
+            <div class="affiliate-link-box">
+              <div class="affiliate-link-text" id="affiliateLink">https://buddycallai.com/?ref=JOHNSMITH2026</div>
+              <button class="copy-btn" onclick="copyAffLink()" title="Copy link">📋</button>
+            </div>
+            <div style="margin-top:14px;display:flex;gap:10px">
+              <button class="btn btn-ghost" onclick="showToast('📤 Sharing options opening...')">📤 Share</button>
+              <button class="btn btn-ghost" onclick="showToast('📊 UTM link created!')">🔗 UTM Link</button>
+            </div>
+            <div class="card" style="margin-top:16px;background:var(--bg3)">
+              <div style="font-size:13px;color:var(--text2);margin-bottom:8px">90-day cookie · Monthly payouts · PayPal or Bank Transfer</div>
+              <div style="font-size:13px;color:var(--text2)">Refer 10 Gold users → earn <strong style="color:var(--cyan)">$71.10/month</strong> passively!</div>
+            </div>
+          </div>
+          <div class="card">
+            <div class="card-title" style="margin-bottom:16px">Referral Activity</div>
+            <div class="table-wrap">
+              <table>
+                <thead><tr><th>User</th><th>Plan</th><th>Status</th><th>Earning</th></tr></thead>
+                <tbody>
+                  <tr><td>user_***23@gm...</td><td>Pro</td><td><span class="badge badge-green">Active</span></td><td>$2.03/mo</td></tr>
+                  <tr><td>user_***91@ya...</td><td>Pro</td><td><span class="badge badge-green">Active</span></td><td>$2.03/mo</td></tr>
+                  <tr><td>user_***54@ho...</td><td>Starter</td><td><span class="badge badge-green">Active</span></td><td>$0.45/mo</td></tr>
+                  <tr><td>user_***17@gm...</td><td>Pro</td><td><span class="badge badge-red">Churned</span></td><td>$0</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── API & WEBHOOKS ── -->
+      <div class="page" id="page-api">
+        <div class="topbar">
+          <div>
+            <div class="page-title">API & Webhooks</div>
+            <div class="page-subtitle">Integrate BuddyCallAI into your own apps</div>
+          </div>
+          <button class="btn btn-cyan" onclick="generateKey()">+ Generate New Key</button>
+        </div>
+
+        <div class="stats-grid" style="margin-bottom:24px">
+          <div class="stat-card"><div class="stat-label">API Calls (Month)</div><div class="stat-value">240</div><div class="stat-sub">of 500 limit</div></div>
+          <div class="stat-card"><div class="stat-label">Active Keys</div><div class="stat-value">2</div><div class="stat-sub">production + staging</div></div>
+          <div class="stat-card"><div class="stat-label">Webhooks</div><div class="stat-value">3</div><div class="stat-sub">active endpoints</div></div>
+          <div class="stat-card"><div class="stat-label">Success Rate</div><div class="stat-value">99.2%</div><div class="stat-sub">last 30 days</div></div>
+        </div>
+
+        <div class="grid-2" style="margin-bottom:24px">
+          <div class="card">
+            <div class="card-title" style="margin-bottom:16px">API Keys</div>
+            <div class="api-key-row">
+              <div>
+                <div style="font-size:12px;color:var(--text3);margin-bottom:4px;font-family:var(--font);letter-spacing:1px;text-transform:uppercase">Production</div>
+                <input class="api-key-text" type="password" value="bca_live_sk_4xK9mN2pQrT8vWz1Y3cH6jL0bE5fA7dG" id="prodKey" readonly/>
+              </div>
+              <button class="copy-btn" onclick="toggleKey('prodKey',this)" title="Reveal / Copy">👁</button>
+              <button class="copy-btn" onclick="copyKey('prodKey')" title="Copy">📋</button>
+            </div>
+            <div class="api-key-row">
+              <div>
+                <div style="font-size:12px;color:var(--text3);margin-bottom:4px;font-family:var(--font);letter-spacing:1px;text-transform:uppercase">Staging</div>
+                <input class="api-key-text" type="password" value="bca_test_sk_8hB3kP7nRsU2xV4wM9yD1eI6aF0cJ5oN" id="stagKey" readonly/>
+              </div>
+              <button class="copy-btn" onclick="toggleKey('stagKey',this)" title="Reveal / Copy">👁</button>
+              <button class="copy-btn" onclick="copyKey('stagKey')" title="Copy">📋</button>
+            </div>
+            <div style="margin-top:16px;display:flex;gap:10px">
+              <button class="btn btn-danger btn-sm" onclick="showToast('🔑 Key revoked and rotated')">Revoke Production Key</button>
+            </div>
+          </div>
+          <div class="card">
+            <div class="card-title" style="margin-bottom:16px">Webhook Endpoints</div>
+            <div style="background:var(--bg3);border:1px solid var(--border);border-radius:var(--radius);padding:14px 16px;margin-bottom:10px">
+              <div style="font-size:13px;font-weight:500">call.completed</div>
+              <div style="font-size:12px;color:var(--text3);margin-top:3px">https://myapp.com/webhooks/buddy-call</div>
+              <span class="badge badge-green" style="margin-top:6px;display:inline-flex">● Delivering</span>
+            </div>
+            <div style="background:var(--bg3);border:1px solid var(--border);border-radius:var(--radius);padding:14px 16px;margin-bottom:10px">
+              <div style="font-size:13px;font-weight:500">call.started</div>
+              <div style="font-size:12px;color:var(--text3);margin-top:3px">https://myapp.com/webhooks/buddy-call</div>
+              <span class="badge badge-green" style="margin-top:6px;display:inline-flex">● Delivering</span>
+            </div>
+            <div style="background:var(--bg3);border:1px solid var(--border);border-radius:var(--radius);padding:14px 16px">
+              <div style="font-size:13px;font-weight:500">transcript.ready</div>
+              <div style="font-size:12px;color:var(--text3);margin-top:3px">https://myapp.com/webhooks/transcript</div>
+              <span class="badge badge-amber" style="margin-top:6px;display:inline-flex">● 2 failures</span>
+            </div>
+            <button class="btn btn-ghost" style="margin-top:14px" onclick="showToast('🔗 Webhook config opens...')">+ Add Webhook</button>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-title" style="margin-bottom:16px">Quick Start</div>
+          <div style="background:#0A0C14;border:1px solid var(--border);border-radius:var(--radius);padding:20px;overflow-x:auto">
+            <pre style="font-family:'Courier New',monospace;font-size:13px;color:#94A3B8;line-height:1.7"><span style="color:#4FC3F7">// Initiate an outbound AI call</span>
+<span style="color:#8B5CF6">const</span> response = <span style="color:#8B5CF6">await</span> <span style="color:#FFB300">fetch</span>(<span style="color:#4ADE80">'https://api.buddycallai.com/v1/calls'</span>, {
+  method: <span style="color:#4ADE80">'POST'</span>,
+  headers: {
+    <span style="color:#4ADE80">'Authorization'</span>: <span style="color:#4ADE80">'Bearer bca_live_sk_...'</span>,
+    <span style="color:#4ADE80">'Content-Type'</span>: <span style="color:#4ADE80">'application/json'</span>
+  },
+  body: JSON.<span style="color:#FFB300">stringify</span>({
+    to: <span style="color:#4ADE80">'+15551234567'</span>,
+    from: <span style="color:#4ADE80">'+18665827524'</span>,
+    voice: <span style="color:#4ADE80">'nova'</span>,
+    greeting: <span style="color:#4ADE80">'Hello! I am your AI assistant...'</span>
+  })
+});
+
+<span style="color:#4FC3F7">// Response includes call_id, status, estimated_duration</span>
+<span style="color:#8B5CF6">const</span> { call_id, status } = <span style="color:#8B5CF6">await</span> response.<span style="color:#FFB300">json</span>();</pre>
+          </div>
+          <div style="margin-top:14px;display:flex;gap:10px">
+            <a href="#" style="color:var(--cyan);font-size:13px;text-decoration:none" onclick="showToast('📚 Docs opening...');return false">📚 Full Documentation →</a>
+            <a href="#" style="color:var(--cyan);font-size:13px;text-decoration:none" onclick="showToast('🧪 Sandbox opening...');return false">🧪 API Sandbox →</a>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── SETTINGS ── -->
+      <div class="page" id="page-settings">
+        <div class="topbar">
+          <div>
+            <div class="page-title">Account Settings</div>
+            <div class="page-subtitle">Manage your profile and preferences</div>
+          </div>
+        </div>
+        <div class="grid-2">
+          <div class="card">
+            <div class="card-title" style="margin-bottom:20px">Profile Information</div>
+            <div class="form-row">
+              <div class="form-group">
+                <label class="form-label">First Name</label>
+                <input class="form-input" value="John" id="settFirstName"/>
+              </div>
+              <div class="form-group">
+                <label class="form-label">Last Name</label>
+                <input class="form-input" value="Smith" id="settLastName"/>
+              </div>
+            </div>
+            <div class="form-group">
+              <label class="form-label">Email Address</label>
+              <input class="form-input" value="demo@buddycallai.com"/>
+            </div>
+            <div class="form-group">
+              <label class="form-label">Phone Number</label>
+              <input class="form-input" value="+1 (555) 867-5309"/>
+            </div>
+            <div class="form-group">
+              <label class="form-label">Time Zone</label>
+              <select class="form-input" style="cursor:pointer">
+                <option>Eastern (UTC-5)</option>
+                <option>Central (UTC-6)</option>
+                <option selected>Pacific (UTC-8)</option>
+                <option>Bogotá (UTC-5)</option>
+              </select>
+            </div>
+            <button class="btn btn-cyan" onclick="saveSettings()">Save Profile</button>
+          </div>
+          <div class="card">
+            <div class="card-title" style="margin-bottom:20px">Notifications</div>
+            <div style="display:flex;flex-direction:column;gap:16px">
+              <div style="display:flex;align-items:center;justify-content:space-between">
+                <div><div style="font-size:14px;font-weight:500">Call Transcripts</div><div style="font-size:12px;color:var(--text3)">Email transcript after each call</div></div>
+                <label class="toggle"><input type="checkbox" checked/><span class="toggle-slider"></span></label>
+              </div>
+              <div style="display:flex;align-items:center;justify-content:space-between">
+                <div><div style="font-size:14px;font-weight:500">Usage Alerts</div><div style="font-size:12px;color:var(--text3)">Alert when 80% of minutes used</div></div>
+                <label class="toggle"><input type="checkbox" checked/><span class="toggle-slider"></span></label>
+              </div>
+              <div style="display:flex;align-items:center;justify-content:space-between">
+                <div><div style="font-size:14px;font-weight:500">Billing Reminders</div><div style="font-size:12px;color:var(--text3)">Notify 3 days before renewal</div></div>
+                <label class="toggle"><input type="checkbox" checked/><span class="toggle-slider"></span></label>
+              </div>
+              <div style="display:flex;align-items:center;justify-content:space-between">
+                <div><div style="font-size:14px;font-weight:500">Affiliate Updates</div><div style="font-size:12px;color:var(--text3)">New referral signup notifications</div></div>
+                <label class="toggle"><input type="checkbox" checked/><span class="toggle-slider"></span></label>
+              </div>
+              <div style="display:flex;align-items:center;justify-content:space-between">
+                <div><div style="font-size:14px;font-weight:500">Marketing Emails</div><div style="font-size:12px;color:var(--text3)">Tips, product updates & promos</div></div>
+                <label class="toggle"><input type="checkbox"/><span class="toggle-slider"></span></label>
+              </div>
+            </div>
+            <div class="card-title" style="margin:24px 0 16px">Security</div>
+            <button class="btn btn-ghost" style="margin-bottom:10px;width:100%" onclick="showToast('🔐 Password reset email sent!')">🔐 Change Password</button>
+            <button class="btn btn-ghost" style="width:100%" onclick="showToast('📱 2FA setup opens...')">📱 Enable 2-Factor Auth</button>
+          </div>
+        </div>
+        <div class="card" style="margin-top:20px;border-color:rgba(239,83,80,0.2)">
+          <div class="card-title" style="color:var(--red);margin-bottom:12px">Danger Zone</div>
+          <div style="display:flex;gap:14px;flex-wrap:wrap">
+            <button class="btn btn-danger" onclick="showToast('⚠️ Account pause confirmation sent to email')">Pause Account</button>
+            <button class="btn btn-danger" onclick="showToast('⚠️ Data export request submitted — ready in 24h')">Export My Data</button>
+            <button class="btn btn-danger" onclick="showToast('⚠️ Please contact support to delete your account')">Delete Account</button>
+          </div>
+        </div>
+      </div>
+
+    </main>
+  </div>
+</div>
+
+<!-- MODALS -->
+<div class="modal-overlay2" id="couponModal">
+  <div class="modal2">
+    <button class="modal-close2" onclick="document.getElementById('couponModal').classList.remove('open')">×</button>
+    <div class="modal-title">Create New Coupon</div>
+    <div class="form-group">
+      <label class="form-label">Coupon Code</label>
+      <input class="form-input" placeholder="e.g. SPRING25" style="text-transform:uppercase" id="newCouponCode"/>
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label class="form-label">Discount Type</label>
+        <select class="form-input" style="cursor:pointer">
+          <option>Percentage (%)</option>
+          <option>Fixed Amount ($)</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Value</label>
+        <input class="form-input" placeholder="e.g. 20" type="number"/>
+      </div>
+    </div>
+    <div class="form-row">
+      <div class="form-group">
+        <label class="form-label">Applies To</label>
+        <select class="form-input" style="cursor:pointer">
+          <option>All Plans</option>
+          <option>Starter Only</option>
+          <option>Pro Only</option>
+          <option>Gold Only</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label class="form-label">Max Uses</label>
+        <input class="form-input" placeholder="Unlimited or number" type="number"/>
+      </div>
+    </div>
+    <div class="form-group">
+      <label class="form-label">Expiry Date</label>
+      <input class="form-input" type="date" value="2026-12-31"/>
+    </div>
+    <button class="btn-primary" onclick="saveCoupon()">Create Coupon</button>
+  </div>
+</div>
+
+<!-- TOAST -->
+<div class="toast" id="toast">
+  <span class="toast-icon" id="toastIcon">✓</span>
+  <span id="toastMsg">Action completed</span>
+</div>
+
+<script>
+// ─── STATE ───
+let currentUser = {
+  name: 'John Smith',
+  email: 'demo@buddycallai.com',
+  plan: 'Pro',
+  initials: 'JS'
+};
+let selectedPlan = 'pro';
+let couponApplied = false;
+
+// ─── AUTH ───
+function switchTab(tab) {
+  document.getElementById('loginPanel').style.display = tab === 'login' ? 'block' : 'none';
+  document.getElementById('signupPanel').style.display = tab === 'signup' ? 'block' : 'none';
+  document.querySelectorAll('.auth-tab').forEach((t, i) => {
+    t.classList.toggle('active', (i === 0 && tab === 'login') || (i === 1 && tab === 'signup'));
+  });
+}
+function selectPlan(el, plan) {
+  document.querySelectorAll('.plan-opt').forEach(o => o.classList.remove('selected'));
+  el.classList.add('selected');
+  selectedPlan = plan;
+  updateOrderSummary();
+}
+function updateOrderSummary() {
+  const prices = { starter: 9, pro: 29, gold: 79 };
+  const names = { starter: 'Starter Plan', pro: 'Pro Plan', gold: 'Gold Plan' };
+  const base = prices[selectedPlan];
+  document.querySelector('#orderSummary .summary-row:first-child span:first-child').textContent = names[selectedPlan];
+  document.querySelector('#orderSummary .summary-row:first-child span:last-child').textContent = `$${base}.00/mo`;
+  if (couponApplied) {
+    const disc = (base * 0.2).toFixed(2);
+    document.getElementById('discountLine').textContent = `-$${disc}`;
+    document.getElementById('totalLine').textContent = `$${(base * 0.8).toFixed(2)}`;
+  } else {
+    document.getElementById('discountLine').textContent = '$0.00';
+    document.getElementById('totalLine').textContent = `$${base}.00`;
+  }
+}
+function applyCoupon() {
+  const code = document.getElementById('signupCoupon').value.trim().toUpperCase();
+  const valid = ['BUDDY20', 'SAVE10', 'GOLD50', 'LAUNCH99'];
+  if (valid.includes(code)) {
+    couponApplied = true;
+    document.getElementById('couponMsg').style.display = 'block';
+    updateOrderSummary();
+    showToast('🏷️ Coupon applied! 20% off first month');
+  } else if (code) {
+    showToast('❌ Invalid coupon code');
+  }
+}
+function applyBillingCoupon() {
+  const code = document.getElementById('billingCoupon').value.trim().toUpperCase();
+  const valid = ['BUDDY20', 'SAVE10', 'GOLD50'];
+  if (valid.includes(code)) showToast('🏷️ Coupon applied to next invoice!');
+  else showToast('❌ Invalid or expired coupon code');
+}
+function doLogin() {
+  const email = document.getElementById('loginEmail').value;
+  const pass = document.getElementById('loginPass').value;
+  if (email && pass) {
+    document.getElementById('authScreen').style.display = 'none';
+    document.getElementById('appScreen').classList.add('active');
+    initApp();
+  } else {
+    showToast('❌ Please enter email and password');
+  }
+}
+function doSignup() {
+  document.getElementById('authScreen').style.display = 'none';
+  document.getElementById('appScreen').classList.add('active');
+  initApp();
+  showToast('🎉 Welcome to BuddyCallAI! Free trial started.');
+}
+function doLogout() {
+  document.getElementById('appScreen').classList.remove('active');
+  document.getElementById('appScreen').style.display = '';
+  document.getElementById('authScreen').style.display = 'flex';
+}
+
+// ─── APP ───
+function initApp() {
+  buildMiniChart();
+}
+function showPage(pageId, navEl) {
+  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'));
+  document.getElementById('page-' + pageId).classList.add('active');
+  document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+  if (navEl) navEl.classList.add('active');
+}
+function buildMiniChart() {
+  const data = [4, 7, 3, 9, 6, 11, 5];
+  const colors = ['#1C2438','#1C2438','#4FC3F7','#4FC3F7','#4FC3F7','#00B4D8','#1C2438'];
+  const chart = document.getElementById('miniChart');
+  if (!chart) return;
+  const max = Math.max(...data);
+  chart.innerHTML = data.map((v, i) => `<div class="mini-bar" style="height:${(v/max)*100}%;background:${colors[i]};border:1px solid rgba(79,195,247,0.2)" title="${v} calls"></div>`).join('');
+}
+
+// ─── MODALS ───
+function openCouponModal() { document.getElementById('couponModal').classList.add('open'); }
+function saveCoupon() {
+  const code = document.getElementById('newCouponCode').value;
+  document.getElementById('couponModal').classList.remove('open');
+  showToast(`🏷️ Coupon ${code.toUpperCase() || 'NEW'} created!`);
+}
+function openCallModal() { showToast('📞 Initiating AI call via dashboard...'); }
+
+// ─── API ───
+function toggleKey(id, btn) {
+  const inp = document.getElementById(id);
+  if (inp.type === 'password') { inp.type = 'text'; btn.textContent = '🔒'; }
+  else { inp.type = 'password'; btn.textContent = '👁'; }
+}
+function copyKey(id) {
+  const val = document.getElementById(id).value;
+  navigator.clipboard?.writeText(val);
+  showToast('📋 API key copied!');
+}
+function generateKey() { showToast('🔑 New API key generated — check email for confirmation'); }
+function copyAffLink() {
+  const val = document.getElementById('affiliateLink').textContent;
+  navigator.clipboard?.writeText(val);
+  showToast('📋 Affiliate link copied!');
+}
+
+// ─── SETTINGS ───
+function saveSettings() {
+  const first = document.getElementById('settFirstName').value;
+  const last = document.getElementById('settLastName').value;
+  document.getElementById('sidebarName').textContent = `${first} ${last}`;
+  document.getElementById('sidebarAvatar').textContent = (first[0]||'') + (last[0]||'');
+  showToast('✓ Profile updated successfully!');
+}
+
+// ─── TOAST ───
+let toastTimer;
+function showToast(msg) {
+  const t = document.getElementById('toast');
+  document.getElementById('toastMsg').textContent = msg;
+  t.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => t.classList.remove('show'), 3000);
+}
+</script>
+</body>
+</html>

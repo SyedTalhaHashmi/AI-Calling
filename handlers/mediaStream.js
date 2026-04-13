@@ -92,7 +92,20 @@ function isStockQuestion(text) {
   return /\b(stock|stocks|share price|share price of|price of|how much is|ticker|quote)\b/i.test(t) || /\b(AAPL|GOOGL|MSFT|AMZN|META|TSLA|NVDA)\b/i.test(t);
 }
 
-function createMediaStreamHandler({ callStore, logger, openaiApiKey, weatherService, timeService, sportsService, flightsService, stocksService }) {
+const TIME_UP_INSTRUCTION =
+  "Say exactly: Your time for this call is up. To keep talking, subscribe or add minutes at buddycallai dot com. Goodbye.";
+
+function createMediaStreamHandler({
+  callStore,
+  logger,
+  openaiApiKey,
+  weatherService,
+  timeService,
+  sportsService,
+  flightsService,
+  stocksService,
+  twilioClient,
+}) {
   return function handleMediaStream(twilioWs, req) {
     let callSid = null;
     let streamSid = null;
@@ -100,8 +113,13 @@ function createMediaStreamHandler({ callStore, logger, openaiApiKey, weatherServ
     let transcriptLines = [];
     let lastUserTranscript = "";
     let responseInProgress = false;
+    let timeLimitTimer = null;
 
     const cleanup = () => {
+      if (timeLimitTimer) {
+        clearInterval(timeLimitTimer);
+        timeLimitTimer = null;
+      }
       if (openaiWs && openaiWs.readyState === WebSocket.OPEN) {
         openaiWs.close();
       }
@@ -127,6 +145,46 @@ function createMediaStreamHandler({ callStore, logger, openaiApiKey, weatherServ
         callStore.addAssistantMessage(callSid, GREETING);
         transcriptLines.push(`AI: ${GREETING}`);
         logger.info({ callSid, streamSid }, "Media stream started");
+
+        const bill = callStore.get(callSid);
+        const maxSec =
+          bill?.maxBillableSeconds != null &&
+          Number.isFinite(Number(bill.maxBillableSeconds))
+            ? Math.floor(Number(bill.maxBillableSeconds))
+            : null;
+
+        if (maxSec != null && maxSec > 0 && twilioClient) {
+          let elapsed = 0;
+          timeLimitTimer = setInterval(() => {
+            elapsed += 1;
+            if (elapsed < maxSec) return;
+            if (timeLimitTimer) {
+              clearInterval(timeLimitTimer);
+              timeLimitTimer = null;
+            }
+            (async () => {
+              try {
+                if (openaiWs && openaiWs.readyState === WebSocket.OPEN) {
+                  openaiWs.send(
+                    JSON.stringify({
+                      type: "response.create",
+                      response: { instructions: TIME_UP_INSTRUCTION },
+                    })
+                  );
+                }
+                const pauseMs = openaiWs?.readyState === WebSocket.OPEN ? 9000 : 800;
+                await new Promise((r) => setTimeout(r, pauseMs));
+                await twilioClient.calls(callSid).update({ status: "completed" });
+                logger.info({ callSid, maxSec }, "Call ended: billable time limit");
+              } catch (err) {
+                logger.error(
+                  { callSid, err: err.message },
+                  "Time-limit hangup failed"
+                );
+              }
+            })();
+          }, 1000);
+        }
 
         // Connect to OpenAI Realtime
         openaiWs = new WebSocket(OPENAI_REALTIME_URL, {

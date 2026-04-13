@@ -13,10 +13,15 @@ const createFlightsService = require("./services/flights");
 const createStocksService = require("./services/stocks");
 const createPlatformApi = require("./services/platformApi");
 const createMediaStreamHandler = require("./handlers/mediaStream");
+const twilio = require("twilio");
 
 function buildServer() {
   const app = express();
   const callStore = new CallStore();
+  const twilioVoiceClient = twilio(
+    config.twilio.accountSid,
+    config.twilio.authToken
+  );
   const services = {
     email: createEmailService({
       emailConfig: config.email,
@@ -64,7 +69,7 @@ function buildServer() {
     sportsService,
     flightsService,
     stocksService,
-    platformApi: services.platformApi,
+    twilioClient: twilioVoiceClient,
   });
 
   wss.on("connection", (ws, req) => {

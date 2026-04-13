@@ -48,8 +48,44 @@ function createCallRoutes({ logger, callStore, services, config }) {
       const session = callStore.getOrCreate(callSid);
       session.callerNumber = req.body.From || null;
       session.calledNumber = req.body.To || null;
+      session.billingMode = "legacy";
+      session.platformUserId = null;
+      session.maxBillableSeconds = null;
+
+      const check = await services.platformApi?.callerCheck?.({
+        callerNumber: session.callerNumber,
+        calledNumber: session.calledNumber,
+      });
+
+      if (check && !check.skipped) {
+        if (!check.allowed) {
+          twiml.say(
+            { voice: "alice" },
+            check.message ||
+              "Please subscribe to Buddy Call A I, then try again. Goodbye."
+          );
+          twiml.hangup();
+          logger.info({ callSid, reason: "caller-check-denied" }, "Call blocked");
+          return res.type("text/xml").send(twiml.toString());
+        }
+        session.billingMode = check.mode || "legacy";
+        session.platformUserId = check.userId || null;
+        if (check.mode === "subscriber" && check.secondsRemaining > 0) {
+          session.maxBillableSeconds = check.secondsRemaining;
+        } else if (check.mode === "trial" && check.maxSecondsThisCall > 0) {
+          session.maxBillableSeconds = check.maxSecondsThisCall;
+        }
+      }
+
       logger.info(
-        { callSid, from: req.body.From, to: req.body.To, streamUrl },
+        {
+          callSid,
+          from: req.body.From,
+          to: req.body.To,
+          streamUrl,
+          billingMode: session.billingMode,
+          maxBillableSeconds: session.maxBillableSeconds,
+        },
         "Call started (streaming)"
       );
       services.platformApi
@@ -128,7 +164,31 @@ function createCallRoutes({ logger, callStore, services, config }) {
         calledNumber,
       })
       .catch(() => {});
-    if (durationSeconds > 0) {
+    if (durationSeconds > 0 && services.platformApi?.enabled) {
+      const mode = session?.billingMode;
+      if (mode === "subscriber" && session?.platformUserId) {
+        services.platformApi
+          .reportUsage({
+            userId: session.platformUserId,
+            secondsConsumed: durationSeconds,
+          })
+          .catch(() => {});
+      } else if (mode === "trial") {
+        services.platformApi
+          .trialReport({
+            callerNumber,
+            secondsConsumed: durationSeconds,
+          })
+          .catch(() => {});
+      } else {
+        services.platformApi
+          .reportUsage({
+            callerNumber,
+            secondsConsumed: durationSeconds,
+          })
+          .catch(() => {});
+      }
+    } else if (durationSeconds > 0) {
       services.platformApi
         ?.reportUsage({
           callerNumber,

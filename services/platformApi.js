@@ -25,8 +25,47 @@ function createPlatformApi(config, logger) {
     }
   }
 
+  /**
+   * Synchronous gate before streaming audio.
+   * @returns {Promise<{ skipped?: boolean, allowed: boolean, mode?: string, userId?: string, secondsRemaining?: number, maxSecondsThisCall?: number, message?: string }>}
+   */
+  async function callerCheck(payload) {
+    if (!enabled) {
+      return { skipped: true, allowed: true };
+    }
+    try {
+      const { data } = await http.post(
+        "/api/v1/integrations/voice/caller-check",
+        payload,
+        {
+          headers: { "x-integration-secret": integrationSecret },
+          timeout: 8000,
+        }
+      );
+      return { skipped: false, ...data };
+    } catch (err) {
+      logger.warn({ err: err.message }, "Platform caller-check failed");
+      return {
+        skipped: false,
+        allowed: false,
+        message:
+          "We could not connect your call right now. Please try again later. Goodbye.",
+      };
+    }
+  }
+
+  async function trialReport(payload) {
+    return post(
+      "/api/v1/usage/trial-report",
+      payload,
+      { "x-usage-secret": usageSecret }
+    );
+  }
+
   return {
     enabled,
+    callerCheck,
+    trialReport,
     notifyCallStart(payload) {
       return post(
         "/api/v1/integrations/voice/call-start",

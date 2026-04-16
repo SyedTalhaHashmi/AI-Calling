@@ -90,3 +90,31 @@ Optional reconcile task:
 
 - If deploy fails after migration, roll back app first, then run a forward-fix migration.
 - Avoid destructive DB rollback in production without a backup snapshot.
+
+## 10) Deployment target options (AWS vs hybrid)
+
+Open question 8 resolved: pick one primary path; both are valid.
+
+### A) AWS (aligned with `websitebuilderfeature.md` §11 / §17)
+
+- **API + workers:** EC2 Auto Scaling behind an ALB, or ECS/Fargate, or Elastic Beanstalk — Node runs `backend/src/index.js`.
+- **Database:** RDS PostgreSQL (private subnets, Multi-AZ for production).
+- **Cache (optional):** ElastiCache Redis if you add session/rate-limit storage there later.
+- **Secrets:** AWS Secrets Manager or SSM Parameter Store; inject into task/EC2 at boot.
+- **Email:** Amazon SES (production sending domain verified; same vars as `ENV_MATRIX.md`: `AWS_REGION`, `SES_FROM_EMAIL`).
+- **Static site:** S3 + CloudFront for `frontend/dist`, or CloudFront origin to the host that serves the SPA.
+- **DNS + TLS:** Route 53 + ACM certificates on ALB/CloudFront.
+
+### B) Hybrid (common for smaller teams)
+
+- **Frontend:** Vercel, Netlify, Cloudflare Pages, or S3+CloudFront — build `frontend`, set `VITE_PUBLIC_SITE_URL` to the live marketing URL.
+- **API:** Railway, Render, Fly.io, or a single VPS — run `node src/index.js` from `backend/`, set `FRONTEND_ORIGIN`, `DATABASE_URL`, Stripe/Twilio/SES secrets.
+- **Database:** Managed Postgres (Neon, Supabase, RDS) — same Prisma migrations from `backend/`.
+- **Webhooks:** Stripe and Twilio must reach your public API URL; use HTTPS and document the exact paths in sections 5–7 above.
+
+### C) What must be true in every environment
+
+- HTTPS for the API and the marketing site.
+- `FRONTEND_ORIGIN` matches the browser origin that calls the API (CORS + cookies).
+- Voice server (`server.js` at repo root) reachable by Twilio; `PUBLIC_BASE_URL` set; `PLATFORM_API_*` secrets match the platform API.
+- Login notification and transcript-related email: platform uses **SES when configured** (`SES_FROM_EMAIL`, `AWS_REGION`); voice server uses root `.env` **SMTP or sendmail** for transcripts (and falls back to `EMAIL_TO` when the platform does not return a line-specific `transcriptEmail`).

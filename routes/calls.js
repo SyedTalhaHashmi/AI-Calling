@@ -70,6 +70,9 @@ function createCallRoutes({ logger, callStore, services, config }) {
         }
         session.billingMode = check.mode || "legacy";
         session.platformUserId = check.userId || null;
+        if (check.transcriptEmail && String(check.transcriptEmail).trim()) {
+          session.transcriptEmailTo = String(check.transcriptEmail).trim();
+        }
         if (check.mode === "subscriber" && check.secondsRemaining > 0) {
           session.maxBillableSeconds = check.secondsRemaining;
         } else if (check.mode === "trial" && check.maxSecondsThisCall > 0) {
@@ -140,6 +143,7 @@ function createCallRoutes({ logger, callStore, services, config }) {
         callSid,
         transcriptBody,
         startedAt: session.startedAt,
+        to: session.transcriptEmailTo || undefined,
       });
       callStore.markEmailed(callSid);
       transcriptSent = true;

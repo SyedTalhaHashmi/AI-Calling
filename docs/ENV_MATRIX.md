@@ -13,16 +13,8 @@ This matrix covers the **platform** stack (`backend/` + `frontend/`) and integra
 
 - `STRIPE_SECRET_KEY`
 - `STRIPE_WEBHOOK_SECRET`
-- `STRIPE_PRICE_STARTER`
-- `STRIPE_PRICE_PRO`
-- `STRIPE_PRICE_GOLD`
 
-Optional coupon IDs:
-
-- `STRIPE_COUPON_LAUNCH50`
-- `STRIPE_COUPON_BUDDY30`
-- `STRIPE_COUPON_BRASH3D`
-- `STRIPE_COUPON_AI2025`
+Subscription amounts use **`DISPLAY_PRICE_STARTER_USD` / `PRO` / `GOLD`** in `backend` config; percent discounts use the **`Coupon`** table in the database (no Stripe Dashboard Price or Coupon IDs).
 
 ## Affiliate
 
@@ -40,6 +32,8 @@ Optional coupon IDs:
 - `AWS_REGION`
 - `SES_FROM_EMAIL`
 - AWS credentials via environment, profile, or role
+
+Used for password reset, **and** optional “new sign-in” email on successful login (same `SES_FROM_EMAIL` → user’s registered account email).
 
 ## Frontend (optional)
 

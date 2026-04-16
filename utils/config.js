@@ -36,8 +36,15 @@ const config = {
     apiKey: process.env.ALPHAVANTAGE_API_KEY || "",
   },
   email: {
+    /** Verified mailbox used in SMTP MAIL FROM / From header (e.g. Hostinger). */
     from: required("EMAIL_FROM"),
-    to: required("EMAIL_TO"),
+    /** Display name for From, e.g. BuddyCallAI — optional (SMTP_FROM_NAME). */
+    fromName: (process.env.SMTP_FROM_NAME || process.env.EMAIL_FROM_NAME || "").trim(),
+    /**
+     * Fallback when the platform does not return a line-specific transcript email
+     * (trial/anonymous callers). Subscribers: recipient comes from DB via caller-check `transcriptEmail`.
+     */
+    to: (process.env.EMAIL_TO || "").trim(),
     smtpHost: process.env.SMTP_HOST || "",
     smtpPort: Number(process.env.SMTP_PORT || 587),
     smtpUser: process.env.SMTP_USER || "",

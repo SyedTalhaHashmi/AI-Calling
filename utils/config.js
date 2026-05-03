@@ -26,6 +26,26 @@ const config = {
   openweather: {
     apiKey: process.env.OPENWEATHER_API_KEY || "",
   },
+  openMeteo: {
+    enabled: process.env.OPEN_METEO_ENABLED !== "false",
+  },
+  googlePlaces: {
+    apiKey: process.env.GOOGLE_PLACES_API_KEY || "",
+  },
+  travelpayouts: {
+    token: process.env.TRAVELPAYOUTS_TOKEN || "",
+  },
+  newsApi: {
+    apiKey: process.env.NEWS_API_KEY || "",
+  },
+  frankfurter: {
+    enabled: process.env.FRANKFURTER_ENABLED !== "false",
+  },
+  rapidApi: {
+    key: process.env.RAPIDAPI_KEY || "",
+    worldTimeHost:
+      process.env.WORLD_TIME_API_HOST || "world-time-api3.p.rapidapi.com",
+  },
   apiFootball: {
     apiKey: process.env.API_FOOTBALL_KEY || "",
   },

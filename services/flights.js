@@ -3,6 +3,7 @@
  * Free: 100 requests/month. Query by flight_iata (e.g. UA1004).
  */
 const axios = require("axios");
+const { MemoryCache } = require("./cache");
 
 const BASE = "https://api.aviationstack.com/v1/flights";
 
@@ -14,14 +15,19 @@ function createFlightsService(apiKey, logger) {
     };
   }
 
+  const cache = new MemoryCache();
+
   async function getFlightStatus(flightIata) {
     if (!flightIata || flightIata.length < 4) {
       return { error: "Please say the flight number, for example flight U A 1004." };
     }
+    const cacheKey = `flight:${flightIata.toUpperCase()}`;
+    const cached = cache.get(cacheKey);
+    if (cached) return cached;
     try {
       const res = await axios.get(BASE, {
-        params: { access_key: apiKey, flight_iata: flightIata.toUpperCase() },
-        timeout: 8000,
+        params: { access_key: apiKey, flight_iata: flightIata.toUpperCase(), limit: 1 },
+        timeout: 2200,
       });
       const data = res.data;
       if (data.error) {
@@ -36,7 +42,7 @@ function createFlightsService(apiKey, logger) {
       const dep = f.departure?.iata || f.departure?.airport || "?";
       const arr = f.arrival?.iata || f.arrival?.airport || "?";
       const airline = f.airline?.name || "Flight";
-      return {
+      const result = {
         flight: f.flight?.iata || flightIata,
         airline,
         status,
@@ -44,6 +50,7 @@ function createFlightsService(apiKey, logger) {
         arrival: arr,
         message: `${airline} ${f.flight?.iata || flightIata}: ${status}, ${dep} to ${arr}.`,
       };
+      return cache.set(cacheKey, result, 60 * 1000);
     } catch (err) {
       logger.warn({ err: err.message, flightIata }, "AviationStack request failed");
       return { error: "Could not fetch flight status." };

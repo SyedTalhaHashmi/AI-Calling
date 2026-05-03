@@ -92,6 +92,52 @@ function isStockQuestion(text) {
   return /\b(stock|stocks|share price|share price of|price of|how much is|ticker|quote)\b/i.test(t) || /\b(AAPL|GOOGL|MSFT|AMZN|META|TSLA|NVDA)\b/i.test(t);
 }
 
+function isNewsQuestion(text) {
+  return /\b(news|headline|headlines|latest news|breaking)\b/i.test(text || "");
+}
+
+function isExchangeQuestion(text) {
+  return /\b(exchange rate|currency|convert|forex|usd|eur|inr|pkr|aed|gbp)\b/i.test(text || "");
+}
+
+function isHotelQuestion(text) {
+  return /\b(hotel|hotels|stay|accommodation|room price|hotel price)\b/i.test(text || "");
+}
+
+function isFoodQuestion(text) {
+  return /\b(food|restaurant|restaurants|eat|dining|best food|best restaurant)\b/i.test(text || "");
+}
+
+function isTravelPriceQuestion(text) {
+  return /\b(flight price|ticket price|cheapest flight|cheap flight|fare|ticket fare)\b/i.test(text || "");
+}
+
+function extractTopic(text) {
+  const match = (text || "").match(/\babout\s+([a-z0-9\s-]+?)(?:\?|$)/i);
+  return match ? match[1].trim() : "";
+}
+
+function extractCurrencies(text) {
+  const symbols = String(text || "")
+    .toUpperCase()
+    .match(/\b[A-Z]{3}\b/g);
+  if (!symbols || symbols.length < 2) return { base: null, quote: null };
+  return { base: symbols[0], quote: symbols[1] };
+}
+
+function extractLocation(text) {
+  const m = String(text || "").match(/\b(?:in|at|near|around)\s+([a-zA-Z\s]+?)(?:\?|\.|$)/i);
+  return m ? m[1].trim().replace(/\s+/g, " ") : "";
+}
+
+function extractRouteIata(text) {
+  const codes = String(text || "")
+    .toUpperCase()
+    .match(/\b[A-Z]{3}\b/g);
+  if (!codes || codes.length < 2) return { origin: null, destination: null };
+  return { origin: codes[0], destination: codes[1] };
+}
+
 const TIME_UP_INSTRUCTION =
   "Say exactly: Your time for this call is up. To keep talking, subscribe or add minutes at buddycallai dot com. Goodbye.";
 
@@ -100,7 +146,13 @@ function createMediaStreamHandler({
   logger,
   openaiApiKey,
   weatherService,
+  openMeteoService,
   timeService,
+  worldTimeService,
+  placesService,
+  travelService,
+  newsService,
+  fxService,
   sportsService,
   flightsService,
   stocksService,
@@ -265,11 +317,13 @@ function createMediaStreamHandler({
             transcriptLines.push(`Caller: ${trimmed}`);
             callStore.addUserMessage(callSid, trimmed);
 
-            if (weatherService?.enabled && isWeatherQuestion(trimmed)) {
+            if ((weatherService?.enabled || openMeteoService?.enabled) && isWeatherQuestion(trimmed)) {
               const { city, country } = extractCityAndCountry(trimmed);
               (async () => {
                 try {
-                  const result = await weatherService.getByCity(city, country);
+                  const result = openMeteoService?.enabled
+                    ? await openMeteoService.getByCity(city, country)
+                    : await weatherService.getByCity(city, country);
                   const fact = result.error
                     ? result.error
                     : `${result.temp} degrees and ${result.description} in ${result.city}`;
@@ -284,9 +338,73 @@ function createMediaStreamHandler({
             }
             if (timeService?.enabled && isTimeQuestion(trimmed)) {
               const tz = timeService.resolveTimezone(trimmed);
-              const { time, timezone } = timeService.getCurrentTime(tz || undefined);
-              const fact = tz ? `${time} in ${timezone.replace(/_/g, " ")}` : time;
-              sendReply(fact, { multilingual: true });
+              (async () => {
+                if (tz && worldTimeService?.enabled) {
+                  const r = await worldTimeService.getTimeByTimezone(tz);
+                  if (!r.error && r.datetime) {
+                    sendReply(`It is ${new Date(r.datetime).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true })} in ${tz.replace(/_/g, " ")}.`, { multilingual: true });
+                    return;
+                  }
+                }
+                const { time, timezone } = timeService.getCurrentTime(tz || undefined);
+                const fact = tz ? `${time} in ${timezone.replace(/_/g, " ")}` : time;
+                sendReply(fact, { multilingual: true });
+              })();
+              return;
+            }
+            if (newsService?.enabled && isNewsQuestion(trimmed)) {
+              const topic = extractTopic(trimmed);
+              (async () => {
+                const result = await newsService.topHeadlines(topic);
+                const fact = result.error
+                  ? result.error
+                  : `Top updates: ${result.articles.map((a) => `${a.title} from ${a.source}`).join(". ")}`;
+                sendReply(fact, { multilingual: !result.error });
+              })();
+              return;
+            }
+            if (fxService?.enabled && isExchangeQuestion(trimmed)) {
+              const { base, quote } = extractCurrencies(trimmed);
+              (async () => {
+                const result = await fxService.getRate(base, quote);
+                const fact = result.error
+                  ? result.error
+                  : `One ${result.base} equals ${result.rate.toFixed(4)} ${result.quote}.`;
+                sendReply(fact, { multilingual: !result.error });
+              })();
+              return;
+            }
+            if (placesService?.enabled && isHotelQuestion(trimmed)) {
+              const location = extractLocation(trimmed);
+              (async () => {
+                const result = await placesService.searchHotels(location);
+                const fact = result.error
+                  ? result.error
+                  : `Popular hotels: ${result.places.map((p) => `${p.name}, rated ${p.rating || "N A"}`).join(". ")}`;
+                sendReply(fact, { multilingual: !result.error });
+              })();
+              return;
+            }
+            if (placesService?.enabled && isFoodQuestion(trimmed)) {
+              const location = extractLocation(trimmed);
+              (async () => {
+                const result = await placesService.searchFood(location);
+                const fact = result.error
+                  ? result.error
+                  : `Popular food places: ${result.places.map((p) => `${p.name}, rated ${p.rating || "N A"}`).join(". ")}`;
+                sendReply(fact, { multilingual: !result.error });
+              })();
+              return;
+            }
+            if (travelService?.enabled && isTravelPriceQuestion(trimmed)) {
+              const { origin, destination } = extractRouteIata(trimmed);
+              (async () => {
+                const result = await travelService.cheapestRoute(origin, destination);
+                const fact = result.error
+                  ? result.error
+                  : `Cheapest recent fare from ${result.origin} to ${result.destination} is ${result.price} ${result.currency}.`;
+                sendReply(fact, { multilingual: !result.error });
+              })();
               return;
             }
             if (sportsService?.enabled && isSportsQuestion(trimmed)) {

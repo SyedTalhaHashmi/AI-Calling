@@ -7,7 +7,13 @@ const { CallStore } = require("./utils/callStore");
 const createCallRoutes = require("./routes/calls");
 const createEmailService = require("./services/email");
 const createWeatherService = require("./services/weather");
+const createOpenMeteoService = require("./services/openMeteo");
 const createTimeService = require("./services/time");
+const createWorldTimeService = require("./services/worldTime");
+const createPlacesService = require("./services/places");
+const createTravelService = require("./services/travel");
+const createNewsService = require("./services/news");
+const createFxService = require("./services/fx");
 const createSportsService = require("./services/sports");
 const createFlightsService = require("./services/flights");
 const createStocksService = require("./services/stocks");
@@ -56,7 +62,17 @@ function buildServer() {
   const server = http.createServer(app);
   const wss = new WebSocket.Server({ server, path: "/media-stream" });
   const weatherService = createWeatherService(config.openweather.apiKey, logger);
+  const openMeteoService = createOpenMeteoService(config.openMeteo.enabled, logger);
   const timeService = createTimeService();
+  const worldTimeService = createWorldTimeService(
+    config.rapidApi.key,
+    config.rapidApi.worldTimeHost,
+    logger
+  );
+  const placesService = createPlacesService(config.googlePlaces.apiKey, logger);
+  const travelService = createTravelService(config.travelpayouts.token, logger);
+  const newsService = createNewsService(config.newsApi.apiKey, logger);
+  const fxService = createFxService(config.frankfurter.enabled, logger);
   const sportsService = createSportsService(config.apiFootball.apiKey, logger);
   const flightsService = createFlightsService(config.aviationstack.apiKey, logger);
   const stocksService = createStocksService(config.alphavantage.apiKey, logger);
@@ -65,7 +81,13 @@ function buildServer() {
     logger,
     openaiApiKey: config.openai.apiKey,
     weatherService,
+    openMeteoService,
     timeService,
+    worldTimeService,
+    placesService,
+    travelService,
+    newsService,
+    fxService,
     sportsService,
     flightsService,
     stocksService,

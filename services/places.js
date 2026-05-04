@@ -9,6 +9,7 @@ function createPlacesService(apiKey, logger) {
       enabled: false,
       searchHotels: async () => ({ error: "Places API is not configured." }),
       searchFood: async () => ({ error: "Places API is not configured." }),
+      searchText: async () => ({ error: "Places API is not configured." }),
     };
   }
 
@@ -56,10 +57,18 @@ function createPlacesService(apiKey, logger) {
     return search(`best ${cuisinePart}restaurants in ${loc}`, `food:${loc.toLowerCase()}:${String(cuisine || "").toLowerCase()}`);
   }
 
+  /** Free-form text (clinic near X, pharmacy in Y) — same Text Search, separate cache key. */
+  function searchText(textQuery) {
+    const q = String(textQuery || "").trim();
+    if (!q) return Promise.resolve({ error: "Please describe what you are looking for." });
+    return search(q, `txt:${q.toLowerCase().slice(0, 120)}`);
+  }
+
   return {
     enabled: true,
     searchHotels,
     searchFood,
+    searchText,
   };
 }
 

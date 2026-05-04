@@ -97,7 +97,11 @@ function isNewsQuestion(text) {
 }
 
 function isExchangeQuestion(text) {
-  return /\b(exchange rate|currency|convert|forex|usd|eur|inr|pkr|aed|gbp)\b/i.test(text || "");
+  const t = (text || "").toLowerCase();
+  return (
+    /\b(exchange rate|currency|convert|conversion|forex|usd|eur|inr|pkr|aed|gbp|cop|mxn)\b/i.test(t) ||
+    /\b(peso|pesos|dollar|dollars|euro|euros|pound|pounds|yen|yuan|real|reais)\b/i.test(t)
+  );
 }
 
 function isHotelQuestion(text) {
@@ -109,12 +113,95 @@ function isFoodQuestion(text) {
 }
 
 function isTravelPriceQuestion(text) {
-  return /\b(flight price|ticket price|cheapest flight|cheap flight|fare|ticket fare)\b/i.test(text || "");
+  const t = (text || "").toLowerCase();
+  return (
+    /\b(flight price|ticket price|cheapest flight|cheap flight|fare|ticket fare|plane ticket|airfare)\b/i.test(t) ||
+    /\b(buy|book|get)\s+(a\s+)?(plane\s+)?ticket/i.test(t) ||
+    /\bticket(s)?\s+(to|from|for)\b/i.test(t) ||
+    /\b(fly|flying|flight)\s+(from|to)\b/i.test(t) ||
+    /\b(recommend|suggest)\s+.*\b(ticket|flight)\b/i.test(t)
+  );
 }
 
 function extractTopic(text) {
   const match = (text || "").match(/\babout\s+([a-z0-9\s-]+?)(?:\?|$)/i);
   return match ? match[1].trim() : "";
+}
+
+/** e.g. "latest news from Colombia" -> "Colombia" */
+function extractNewsQuery(text) {
+  const t = text || "";
+  let m = t.match(/\b(?:latest\s+)?news\s+(?:from|in|about)\s+([a-zA-ZÀ-ÿ\s]+?)(?:\?|\.|$)/i);
+  if (m) return m[1].trim();
+  m = t.match(/\bheadlines?\s+(?:from|in|about)\s+([a-zA-ZÀ-ÿ\s]+?)(?:\?|\.|$)/i);
+  if (m) return m[1].trim();
+  m = t.match(/\bbreaking\s+(?:news\s+)?(?:from|in)\s+([a-zA-ZÀ-ÿ\s]+?)(?:\?|\.|$)/i);
+  if (m) return m[1].trim();
+  return extractTopic(t);
+}
+
+/** Clinic / hospital / pharmacy — needs Google Places + key. */
+function isLocalServiceQuestion(text) {
+  const t = (text || "").toLowerCase();
+  if (!/\b(clinic|clinics|hospital|hospitals|pharmacy|pharmacies|dentist|urgent care|walk-?in)\b/.test(t)) {
+    return false;
+  }
+  return (
+    /\b(near|nearest|closest|around|unicentro|find|where's|where is)\b/i.test(t) ||
+    /\b(in|near)\s+[a-zà-ÿ]{4,}/i.test(t)
+  );
+}
+
+/** City name -> IATA for common routes (speech rarely includes airport codes). */
+const CITY_IATA_ENTRIES = [
+  ["new york", "JFK"],
+  ["los angeles", "LAX"],
+  ["mexico city", "MEX"],
+  ["são paulo", "GRU"],
+  ["sao paulo", "GRU"],
+  ["buenos aires", "EZE"],
+  ["bogotá", "BOG"],
+  ["bogota", "BOG"],
+  ["medellín", "MDE"],
+  ["medellin", "MDE"],
+  ["cartagena", "CTG"],
+  ["barranquilla", "BAQ"],
+  ["cali", "CLO"],
+  ["miami", "MIA"],
+  ["orlando", "MCO"],
+  ["chicago", "ORD"],
+  ["dallas", "DFW"],
+  ["houston", "IAH"],
+  ["lima", "LIM"],
+  ["santiago", "SCL"],
+  ["london", "LHR"],
+  ["paris", "CDG"],
+  ["rome", "FCO"],
+  ["madrid", "MAD"],
+  ["toronto", "YYZ"],
+  ["dubai", "DXB"],
+  ["tokyo", "NRT"],
+  ["delhi", "DEL"],
+  ["karachi", "KHI"],
+].sort((a, b) => b[0].length - a[0].length);
+
+function extractRouteFromCityNames(text) {
+  const lower = (text || "").toLowerCase();
+  const hits = [];
+  for (const [city, code] of CITY_IATA_ENTRIES) {
+    const idx = lower.indexOf(city);
+    if (idx !== -1) hits.push({ idx, code });
+  }
+  hits.sort((a, b) => a.idx - b.idx);
+  const codes = [];
+  const seen = new Set();
+  for (const h of hits) {
+    if (seen.has(h.code)) continue;
+    seen.add(h.code);
+    codes.push(h.code);
+    if (codes.length >= 2) break;
+  }
+  return { origin: codes[0] || null, destination: codes[1] || null };
 }
 
 function extractCurrencies(text) {
@@ -353,7 +440,7 @@ function createMediaStreamHandler({
               return;
             }
             if (newsService?.enabled && isNewsQuestion(trimmed)) {
-              const topic = extractTopic(trimmed);
+              const topic = extractNewsQuery(trimmed);
               (async () => {
                 const result = await newsService.topHeadlines(topic);
                 const fact = result.error
@@ -364,12 +451,25 @@ function createMediaStreamHandler({
               return;
             }
             if (fxService?.enabled && isExchangeQuestion(trimmed)) {
-              const { base, quote } = extractCurrencies(trimmed);
+              const iso = extractCurrencies(trimmed);
+              const spoken = fxService.parsePairFromUtterance(trimmed);
+              const base = iso.base || spoken.base;
+              const quote = iso.quote || spoken.quote;
               (async () => {
                 const result = await fxService.getRate(base, quote);
                 const fact = result.error
                   ? result.error
                   : `One ${result.base} equals ${result.rate.toFixed(4)} ${result.quote}.`;
+                sendReply(fact, { multilingual: !result.error });
+              })();
+              return;
+            }
+            if (placesService?.enabled && isLocalServiceQuestion(trimmed)) {
+              (async () => {
+                const result = await placesService.searchText(trimmed.slice(0, 200));
+                const fact = result.error
+                  ? result.error
+                  : `Nearby options: ${result.places.map((p) => `${p.name}${p.address ? ", " + p.address : ""}`).join(". ")}`;
                 sendReply(fact, { multilingual: !result.error });
               })();
               return;
@@ -397,7 +497,12 @@ function createMediaStreamHandler({
               return;
             }
             if (travelService?.enabled && isTravelPriceQuestion(trimmed)) {
-              const { origin, destination } = extractRouteIata(trimmed);
+              let { origin, destination } = extractRouteIata(trimmed);
+              if (!origin || !destination) {
+                const byCity = extractRouteFromCityNames(trimmed);
+                if (!origin) origin = byCity.origin;
+                if (!destination) destination = byCity.destination;
+              }
               (async () => {
                 const result = await travelService.cheapestRoute(origin, destination);
                 const fact = result.error

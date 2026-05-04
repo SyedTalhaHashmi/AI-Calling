@@ -3,6 +3,27 @@ const { MemoryCache } = require("./cache");
 
 const BASE = "https://newsapi.org/v2";
 
+const COUNTRY_NAME_TO_CODE = {
+  colombia: "co",
+  mexico: "mx",
+  spain: "es",
+  france: "fr",
+  germany: "de",
+  italy: "it",
+  brazil: "br",
+  argentina: "ar",
+  chile: "cl",
+  peru: "pe",
+  india: "in",
+  pakistan: "pk",
+  "united states": "us",
+  usa: "us",
+  "united kingdom": "gb",
+  uk: "gb",
+  canada: "ca",
+  australia: "au",
+};
+
 function createNewsService(apiKey, logger) {
   if (!apiKey) {
     return {
@@ -14,16 +35,23 @@ function createNewsService(apiKey, logger) {
   const cache = new MemoryCache();
 
   async function topHeadlines(query, language = "en") {
-    const q = String(query || "").trim().toLowerCase();
-    const cacheKey = `news:${language}:${q}`;
+    const raw = String(query || "").trim().toLowerCase();
+    const countryCode = COUNTRY_NAME_TO_CODE[raw] || null;
+    const cacheKey = `news:${language}:${countryCode || raw}`;
     const cached = cache.get(cacheKey);
     if (cached) return cached;
 
     try {
-      const endpoint = q ? "everything" : "top-headlines";
-      const params = q
-        ? { q, language, sortBy: "publishedAt", pageSize: 3 }
-        : { language, pageSize: 3 };
+      let endpoint = "top-headlines";
+      let params = { pageSize: 5 };
+      if (countryCode) {
+        params.country = countryCode;
+      } else if (raw) {
+        endpoint = "everything";
+        params = { q: raw, language, sortBy: "publishedAt", pageSize: 5 };
+      } else {
+        params.language = language;
+      }
       const res = await axios.get(`${BASE}/${endpoint}`, {
         params,
         headers: { "X-Api-Key": apiKey },

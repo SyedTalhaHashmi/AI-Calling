@@ -82,6 +82,16 @@ const config = {
     defaultVoiceId: (process.env.ELEVENLABS_VOICE_ID || "21m00Tcm4TlvDq8ikWAM").trim(),
     defaultModelId: (process.env.ELEVENLABS_MODEL_ID || "eleven_flash_v2_5").trim(),
   },
+  /** Deepgram Aura TTS — used when configured (preferred over ElevenLabs for “auto”). */
+  deepgram: {
+    apiKey: (process.env.DEEPGRAM_API_KEY || "").trim(),
+    ttsModelEn: (process.env.DEEPGRAM_TTS_MODEL_EN || "aura-2-thalia-en").trim(),
+    ttsModelEs: (process.env.DEEPGRAM_TTS_MODEL_ES || "aura-2-celeste-es").trim(),
+  },
+  /** Landing TTS: auto | deepgram | elevenlabs */
+  landingTts: {
+    provider: (process.env.LANDING_TTS_PROVIDER || "auto").trim().toLowerCase(),
+  },
 };
 
 module.exports = config;

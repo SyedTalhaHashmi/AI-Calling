@@ -23,7 +23,7 @@ const REALTIME_INPUT_AUDIO = {
     prefix_padding_ms: 300,
     silence_duration_ms: 600,
     interrupt_response: true,
-    create_response: true,
+    create_response: false,
   },
 };
 
@@ -403,6 +403,10 @@ function createMediaStreamHandler({
             lastUserTranscript = trimmed;
             transcriptLines.push(`Caller: ${trimmed}`);
             callStore.addUserMessage(callSid, trimmed);
+            if (responseInProgress && openaiWs?.readyState === WebSocket.OPEN) {
+              openaiWs.send(JSON.stringify({ type: "response.cancel" }));
+              responseInProgress = false;
+            }
 
             if ((weatherService?.enabled || openMeteoService?.enabled) && isWeatherQuestion(trimmed)) {
               const { city, country } = extractCityAndCountry(trimmed);
@@ -560,6 +564,9 @@ function createMediaStreamHandler({
               })();
               return;
             }
+            if (openaiWs?.readyState === WebSocket.OPEN) {
+              openaiWs.send(JSON.stringify({ type: "response.create" }));
+            }
           }
 
           if (ev.type === "conversation.item.input_audio_transcription.completed" && ev.transcript) {
@@ -586,13 +593,6 @@ function createMediaStreamHandler({
             } catch (err) {
               logger.warn({ callSid, err: err.message }, "Audio convert failed");
             }
-          }
-
-          if (ev.type === "conversation.item.added" && ev.item?.role === "user") {
-            const contents = ev.item?.content || [];
-            const fromContent = contents.map((c) => (c?.transcript != null ? String(c.transcript) : c?.text != null ? String(c.text) : "").trim()).filter(Boolean);
-            const text = (ev.transcript != null ? String(ev.transcript) : "").trim() || fromContent[0] || "";
-            if (text) handleUserTranscript(text);
           }
 
           if (ev.type === "response.output_audio_transcript.done" && ev.transcript) {

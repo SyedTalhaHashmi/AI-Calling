@@ -116,6 +116,9 @@ function isTravelPriceQuestion(text) {
   const t = (text || "").toLowerCase();
   return (
     /\b(flight price|ticket price|cheapest flight|cheap flight|fare|ticket fare|plane ticket|airfare)\b/i.test(t) ||
+    /\b(precio(s)?\s+del?\s+(vuelo|tiquete|boleto|pasaje)|cu[aá]nto\s+cuesta\s+un?\s+(tiquete|boleto|pasaje|vuelo))\b/i.test(t) ||
+    /\b(viajar|viaje)\s+de\s+.+\s+a\s+.+\b/i.test(t) ||
+    /\b(tiquete|boleto|pasaje)(s)?\b/i.test(t) ||
     /\b(buy|book|get)\s+(a\s+)?(plane\s+)?ticket/i.test(t) ||
     /\bticket(s)?\s+(to|from|for)\b/i.test(t) ||
     /\b(fly|flying|flight)\s+(from|to)\b/i.test(t) ||
@@ -507,6 +510,15 @@ function createMediaStreamHandler({
                 if (!origin) origin = byCity.origin;
                 if (!destination) destination = byCity.destination;
               }
+              logger.info(
+                {
+                  callSid,
+                  origin: origin || null,
+                  destination: destination || null,
+                  travelIntentMatched: true,
+                },
+                "Travel fast path triggered"
+              );
               (async () => {
                 const result = await travelService.cheapestRoute(origin, destination);
                 const fact = result.error

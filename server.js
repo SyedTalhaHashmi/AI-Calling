@@ -5,6 +5,7 @@ const config = require("./utils/config");
 const logger = require("./utils/logger");
 const { CallStore } = require("./utils/callStore");
 const createCallRoutes = require("./routes/calls");
+const createPublicLandingTtsRoutes = require("./routes/publicLandingTts");
 const createEmailService = require("./services/email");
 const createWeatherService = require("./services/weather");
 const createOpenMeteoService = require("./services/openMeteo");
@@ -43,6 +44,13 @@ function buildServer() {
   app.get("/health", (req, res) => {
     res.status(200).json({ ok: true });
   });
+
+  app.use(
+    createPublicLandingTtsRoutes({
+      config,
+      logger,
+    })
+  );
 
   app.use(
     "/",

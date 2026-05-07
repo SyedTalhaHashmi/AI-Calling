@@ -35,6 +35,7 @@ npm run db:generate
 - Build output: `frontend/dist`
 - Must serve static files over HTTPS.
 - Ensure `robots.txt`, `sitemap.xml`, and `og-image.svg` are reachable from the public root.
+- **Landing “Play Voice” (ElevenLabs):** Putting `VITE_ELEVENLABS_*` only on the host after deploy does nothing until you **`npm run build` again**. Production should use **`ELEVENLABS_*` on the root voice `server.js` process** so `POST /api/public/landing-demo-tts` can proxy audio. Reverse-proxy **`/api/public/`** or **`/api`** from the edge (e.g. Caddy) to the Node voice server alongside static `frontend/dist`.
 
 ## 4) Backend deployment
 

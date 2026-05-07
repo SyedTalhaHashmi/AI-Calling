@@ -76,6 +76,12 @@ const config = {
     integrationSecret: process.env.INTEGRATION_WEBHOOK_SECRET || "",
     usageSecret: process.env.USAGE_WEBHOOK_SECRET || "",
   },
+  /** Landing page “Play Voice” demo — proxied via POST /api/public/landing-demo-tts */
+  elevenlabs: {
+    apiKey: (process.env.ELEVENLABS_API_KEY || "").trim(),
+    defaultVoiceId: (process.env.ELEVENLABS_VOICE_ID || "21m00Tcm4TlvDq8ikWAM").trim(),
+    defaultModelId: (process.env.ELEVENLABS_MODEL_ID || "eleven_flash_v2_5").trim(),
+  },
 };
 
 module.exports = config;

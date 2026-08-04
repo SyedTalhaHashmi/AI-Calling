@@ -4,13 +4,28 @@ This runbook provides one path from **git push** to **live frontend + platform A
 
 ## 1) Build and verify locally
 
-### Frontend
+### Frontend (Next.js — `frontendnext/`)
+
+```bash
+cd frontendnext
+npm ci
+npm run build
+npm run start
+```
+
+Opens on `PORT` (default **3000**). Dev: `npm run dev` → **5174**.
+
+See **`frontendnext/docs/COOLIFY.md`** for Coolify deployment.
+
+### Frontend (legacy Vite — `frontend/`)
 
 ```bash
 cd frontend
 npm ci
 npm run build
 ```
+
+Retire after `frontendnext` is live in production.
 
 ### Backend
 
@@ -32,10 +47,22 @@ npm run db:generate
 
 ## 3) Frontend deployment
 
+### Next.js (`calling-FENEXT` repo) — primary
+
+- **Coolify:** Nixpacks (Node 20), port **3000**, health `GET /`.
+- **Build:** `npm ci && npm run build` · **Start:** `npm run start`
+- **Build-time env:** `NEXT_PUBLIC_SITE_URL`, `NEXT_PUBLIC_GA4_ID`
+- **Runtime env:** `PLATFORM_API_URL`, `VOICE_API_URL` for same-origin rewrites
+- **Backend:** `FRONTEND_ORIGIN` must list the live site origin(s)
+
+Full steps: `frontendnext/docs/COOLIFY.md` (or repo root `docs/COOLIFY.md` on GitHub).
+
+### Legacy static Vite (`frontend/dist`)
+
 - Build output: `frontend/dist`
 - Must serve static files over HTTPS.
 - Ensure `robots.txt`, `sitemap.xml`, and `og-image.svg` are reachable from the public root.
-- **Landing “Play Voice” (ElevenLabs):** Putting `VITE_ELEVENLABS_*` only on the host after deploy does nothing until you **`npm run build` again**. Production should use **`ELEVENLABS_*` on the root voice `server.js` process** so `POST /api/public/landing-demo-tts` can proxy audio. Reverse-proxy **`/api/public/`** or **`/api`** from the edge (e.g. Caddy) to the Node voice server alongside static `frontend/dist`.
+- **Landing “Play Voice” (ElevenLabs):** Production should use **`ELEVENLABS_*` on the root voice `server.js` process** so `POST /api/public/landing-demo-tts` can proxy audio. Reverse-proxy **`/api/public/`** or **`/api`** from the edge (e.g. Caddy) to the Node voice server alongside static `frontend/dist`.
 
 ## 4) Backend deployment
 

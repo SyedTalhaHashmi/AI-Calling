@@ -102,12 +102,12 @@ function createEmailService({ emailConfig, logger }) {
 
   async function sendTranscript({ callSid, transcriptBody, startedAt, to }) {
     const dateLabel = startedAt ? new Date(startedAt).toISOString() : new Date().toISOString();
-    /** Prefer platform/DB line email (subscriber); else EMAIL_TO for trial/anonymous. */
+    /** Prefer platform/DB line email (subscriber or registered trial); else EMAIL_TO for anonymous trial. */
     const destination =
       (to && String(to).trim()) || (emailConfig.to && String(emailConfig.to).trim()) || "";
     if (!destination) {
       const err = new Error(
-        "No transcript recipient: for subscribers ensure PLATFORM_API_* and integration secrets are set so the API can return transcriptEmail from UserPhoneNumber; for trial calls set EMAIL_TO."
+        "No transcript recipient: ensure PLATFORM_API_* returns transcriptEmail from UserPhoneNumber for registered callers; set EMAIL_TO only as fallback for anonymous trials."
       );
       err.code = "NO_TRANSCRIPT_TO";
       throw err;

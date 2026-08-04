@@ -280,7 +280,7 @@ Copy the **HTTPS** URL ngrok shows (e.g. `https://a1b2c3d4.ngrok-free.app`). You
 ### Step 3: Configure your Twilio number (Voice only)
 
 1. Go to [Twilio Console → Phone Numbers → Manage → Active Numbers](https://console.twilio.com/us1/develop/phone-numbers/manage/incoming).
-2. Click your number: **+1 833 958 6327**.
+2. Click your number: **+1 (866) 582-7524**.
 3. Scroll to **Voice Configuration**.
 4. Under **A call comes in**:
    - Choose **Webhook**.
@@ -305,7 +305,7 @@ Restart the server (`Ctrl+C`, then `npm start`) so it picks up the new value.
 
 ### Step 5: Call and test
 
-1. From **any phone** (e.g. your Ufone number), dial **+1 833 958 6327** (or 833-958-6327 in the US).
+1. From **any phone** (e.g. your Ufone number), dial **+1 (866) 582-7524** (or 866-582-7524 in the US).
 2. You should hear: *"Hello, you are speaking with an AI assistant. Ask me anything."*
 3. After the tone (or short pause), **speak clearly**, e.g. *"What is Bitcoin?"* or *"Tell me a short joke."*
 4. Wait for the AI to respond with voice.

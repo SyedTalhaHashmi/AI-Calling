@@ -61,8 +61,8 @@ const config = {
     /** Display name for From, e.g. BuddyCallAI — optional (SMTP_FROM_NAME). */
     fromName: (process.env.SMTP_FROM_NAME || process.env.EMAIL_FROM_NAME || "").trim(),
     /**
-     * Fallback when the platform does not return a line-specific transcript email
-     * (trial/anonymous callers). Subscribers: recipient comes from DB via caller-check `transcriptEmail`.
+     * Fallback when caller-check has no line email (anonymous trial only).
+     * Registered callers (subscriber or free trial) use UserPhoneNumber.emailForTranscripts.
      */
     to: (process.env.EMAIL_TO || "").trim(),
     smtpHost: process.env.SMTP_HOST || "",

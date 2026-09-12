@@ -87,9 +87,34 @@ function extractFlightNumber(text) {
   return fallback ? fallback[1].toUpperCase() : null;
 }
 
-function isStockQuestion(text) {
+function isCryptoQuestion(text) {
   const t = (text || "").toLowerCase();
-  return /\b(stock|stocks|share price|share price of|price of|how much is|ticker|quote)\b/i.test(t) || /\b(AAPL|GOOGL|MSFT|AMZN|META|TSLA|NVDA)\b/i.test(t);
+  return /\b(bitcoin|btc|ethereum|eth|solana|dogecoin|doge|crypto|cryptocurrency|ripple|xrp|cardano)\b/i.test(
+    t
+  );
+}
+
+function isRatesQuestion(text) {
+  const t = (text || "").toLowerCase();
+  return (
+    /\b(interest rate|interest rates|fed funds|federal funds|treasury yield|treasury rate|bank rate|savings rate|apy)\b/i.test(
+      t
+    ) ||
+    (/\brates?\b/i.test(t) &&
+      /\b(u\.?s\.?|united states|fed|federal|bank|banks|savings)\b/i.test(t))
+  );
+}
+
+function isStockQuestion(text) {
+  if (isCryptoQuestion(text) || isRatesQuestion(text)) return false;
+  const t = (text || "").toLowerCase();
+  return (
+    /\b(stock|stocks|share price|share price of|ticker|quote)\b/i.test(t) ||
+    /\b(price of|how much is)\s+(apple|google|microsoft|amazon|meta|tesla|nvidia|netflix|[a-z]{1,5}\s+stock)\b/i.test(
+      t
+    ) ||
+    /\b(AAPL|GOOGL|MSFT|AMZN|META|TSLA|NVDA|NFLX)\b/i.test(t)
+  );
 }
 
 function isNewsQuestion(text) {
@@ -114,16 +139,31 @@ function isFoodQuestion(text) {
 
 function isTravelPriceQuestion(text) {
   const t = (text || "").toLowerCase();
-  return (
-    /\b(flight price|ticket price|cheapest flight|cheap flight|fare|ticket fare|plane ticket|airfare)\b/i.test(t) ||
-    /\b(precio(s)?\s+del?\s+(vuelo|tiquete|boleto|pasaje)|cu[aá]nto\s+cuesta\s+un?\s+(tiquete|boleto|pasaje|vuelo))\b/i.test(t) ||
+  if (
+    /\b(flight price|ticket price|cheapest flight|cheap flight|fare|ticket fare|plane ticket|airfare|flight cost|travel cost)\b/i.test(
+      t
+    ) ||
+    /\b(average\s+price|price\s+to\s+travel|cost\s+to\s+(fly|travel)|how\s+much\s+(does\s+it\s+cost\s+)?to\s+(fly|travel))\b/i.test(
+      t
+    ) ||
+    /\b(precio(s)?\s+del?\s+(vuelo|tiquete|boleto|pasaje)|cu[aá]nto\s+cuesta\s+un?\s+(tiquete|boleto|pasaje|vuelo))\b/i.test(
+      t
+    ) ||
     /\b(viajar|viaje)\s+de\s+.+\s+a\s+.+\b/i.test(t) ||
     /\b(tiquete|boleto|pasaje)(s)?\b/i.test(t) ||
     /\b(buy|book|get)\s+(a\s+)?(plane\s+)?ticket/i.test(t) ||
     /\bticket(s)?\s+(to|from|for)\b/i.test(t) ||
     /\b(fly|flying|flight)\s+(from|to)\b/i.test(t) ||
     /\b(recommend|suggest)\s+.*\b(ticket|flight)\b/i.test(t)
-  );
+  ) {
+    return true;
+  }
+  // "travel … Bogotá … Miami" style — two known cities + travel wording
+  if (/\b(travel|travelling|traveling|trip|fly|flight)\b/i.test(t)) {
+    const route = extractRouteFromCityNames(t);
+    if (route.origin && route.destination) return true;
+  }
+  return false;
 }
 
 function extractTopic(text) {
@@ -519,11 +559,18 @@ function createMediaStreamHandler({
                 },
                 "Travel fast path triggered"
               );
+              if (!origin || !destination) {
+                sendReply(
+                  "Sure — tell me the from city and to city, and I'll check recent fare prices.",
+                  { multilingual: true }
+                );
+                return;
+              }
               (async () => {
                 const result = await travelService.cheapestRoute(origin, destination);
                 const fact = result.error
                   ? result.error
-                  : `Cheapest recent fare from ${result.origin} to ${result.destination} is ${result.price} ${result.currency}.`;
+                  : `Cheapest recent fare from ${result.origin} to ${result.destination} is about ${result.price} ${result.currency}.`;
                 sendReply(fact, { multilingual: !result.error });
               })();
               return;
@@ -558,6 +605,40 @@ function createMediaStreamHandler({
                 } catch (err) {
                   logger.error({ callSid, err: err.message }, "Flight fast path failed");
                   sendReply("I couldn't get that flight status.", { multilingual: false });
+                }
+              })();
+              return;
+            }
+            if (stocksService?.enabled && isCryptoQuestion(trimmed)) {
+              (async () => {
+                try {
+                  const result = await stocksService.getCryptoQuote(trimmed);
+                  const fact = result.error ? result.error : result.message;
+                  logger.info({ callSid, fact }, "Crypto fast path");
+                  sendReply(fact, { multilingual: !result.error });
+                } catch (err) {
+                  logger.error({ callSid, err: err.message }, "Crypto fast path failed");
+                  sendReply(
+                    "I couldn't fetch that crypto price right now. Please try again shortly.",
+                    { multilingual: false }
+                  );
+                }
+              })();
+              return;
+            }
+            if (stocksService?.enabled && isRatesQuestion(trimmed)) {
+              (async () => {
+                try {
+                  const result = await stocksService.getUsInterestRate();
+                  const fact = result.error ? result.error : result.message;
+                  logger.info({ callSid, fact }, "Rates fast path");
+                  sendReply(fact, { multilingual: !result.error });
+                } catch (err) {
+                  logger.error({ callSid, err: err.message }, "Rates fast path failed");
+                  sendReply(
+                    "Many U S savings rates are often around four to five percent — check your bank for the exact APY.",
+                    { multilingual: false }
+                  );
                 }
               })();
               return;

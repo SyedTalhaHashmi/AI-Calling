@@ -37,9 +37,17 @@ function createTravelService(token, logger) {
         timeout: 1800,
       });
       const bucket = res.data?.data?.[to];
-      if (!bucket) return { error: `No ticket prices found for ${from} to ${to}.` };
+      if (!bucket) {
+        return {
+          error: `I couldn't find recent ticket prices for ${from} to ${to}. Try Kayak or Skyscanner for live deals.`,
+        };
+      }
       const entries = Object.values(bucket);
-      if (!entries.length) return { error: `No ticket prices found for ${from} to ${to}.` };
+      if (!entries.length) {
+        return {
+          error: `I couldn't find recent ticket prices for ${from} to ${to}. Try Kayak or Skyscanner for live deals.`,
+        };
+      }
       entries.sort((a, b) => Number(a.price || Infinity) - Number(b.price || Infinity));
       const best = entries[0];
       const result = {

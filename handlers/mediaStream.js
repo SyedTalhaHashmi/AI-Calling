@@ -5,6 +5,12 @@
 const WebSocket = require("ws");
 const { twilioToOpenAI, openAIToTwilio } = require("../services/audioConvert");
 const { SYSTEM_PROMPT } = require("../utils/callStore");
+const {
+  extractWeatherPlaces,
+  findCountryInText,
+  normalizeCountryCode,
+  defaultCityForCountry,
+} = require("../utils/placeResolve");
 
 const OPENAI_REALTIME_URL = "wss://api.openai.com/v1/realtime?model=gpt-realtime";
 
@@ -30,17 +36,19 @@ const REALTIME_INPUT_AUDIO = {
 const WEATHER_TOOL = {
   type: "function",
   name: "get_weather",
-  description: "Get current weather for a city. Use whenever the user asks about weather, temperature, or conditions. Always call this—never guess weather.",
+  description:
+    "Get current weather for a city. Always call this for weather/temperature/forecast—never guess. When the user names a country or territory (e.g. Puerto Rico, France), pass it in country (ISO code or full name) and use that country's main city if no city is given. For ambiguous cities (San Juan, London, Paris), country is required. If they ask about two cities (A or B), call once per city.",
   parameters: {
     type: "object",
     properties: {
       city: {
         type: "string",
-        description: "City name, e.g. London, Miami, Karachi, Paris",
+        description: "City name, e.g. London, Miami, San Juan, Karachi",
       },
       country: {
         type: "string",
-        description: "Optional country or state to disambiguate, e.g. France, California",
+        description:
+          "Country or territory to disambiguate — ISO code preferred (PR, US, FR) or full name (Puerto Rico, France). Always set when known from this or prior turns.",
       },
     },
     required: ["city"],
@@ -49,19 +57,69 @@ const WEATHER_TOOL = {
 
 function isWeatherQuestion(text) {
   const t = (text || "").toLowerCase();
-  const keywords = ["weather", "temperature", "forecast", "rain", "snow", "sunny", "hot", "cold", "degrees", "how warm", "how cold"];
+  const keywords = [
+    "weather",
+    "temperature",
+    "forecast",
+    "rain",
+    "snow",
+    "sunny",
+    "hot",
+    "cold",
+    "degrees",
+    "how warm",
+    "how cold",
+    "clima",
+    "tiempo",
+    "temperatura",
+    "pronóstico",
+    "pronostico",
+    "mausam",
+    "موسم",
+  ];
   return keywords.some((k) => t.includes(k));
 }
 
-function extractCityAndCountry(text) {
-  const t = (text || "").trim();
-  const inMatch = t.match(/\b(?:in|at|for|of)\s+([a-zA-Z\s]+?)(?:\s*,\s*([a-zA-Z\s]+))?(?:\?|\.|$)/i);
-  if (inMatch) {
-    const city = inMatch[1].trim().replace(/\s+/g, " ");
-    const country = inMatch[2]?.trim().replace(/\s+/g, " ");
-    return { city: city || "unknown", country: country || undefined };
+function extractCityAndCountry(text, placeHint) {
+  const { places, countryHint } = extractWeatherPlaces(text);
+  const hintCountry =
+    normalizeCountryCode(placeHint?.country) ||
+    normalizeCountryCode(countryHint) ||
+    undefined;
+
+  if (places.length) {
+    return places.map((p) => ({
+      city: p.city,
+      country: normalizeCountryCode(p.country) || hintCountry || undefined,
+    }));
   }
-  return { city: "unknown", country: undefined };
+
+  if (hintCountry) {
+    const def = defaultCityForCountry(hintCountry);
+    if (def) return [{ city: def, country: hintCountry }];
+  }
+
+  return [{ city: "unknown", country: hintCountry }];
+}
+
+function formatWeatherFact(result) {
+  if (result.error) return result.error;
+  const where = [result.city, result.country].filter(Boolean).join(", ");
+  const humidity =
+    result.humidity != null ? `, humidity ${result.humidity}%` : "";
+  return `${result.temp} degrees and ${result.description} in ${where}${humidity}`;
+}
+
+async function fetchWeatherForPlace(place, openMeteoService, weatherService) {
+  const city = place.city;
+  const country = place.country;
+  if (openMeteoService?.enabled) {
+    return openMeteoService.getByCity(city, country);
+  }
+  if (weatherService?.enabled) {
+    return weatherService.getByCity(city, country);
+  }
+  return { error: "Weather not configured." };
 }
 
 function isTimeQuestion(text) {
@@ -446,23 +504,53 @@ function createMediaStreamHandler({
             lastUserTranscript = trimmed;
             transcriptLines.push(`Caller: ${trimmed}`);
             callStore.addUserMessage(callSid, trimmed);
+
+            // Remember last country/territory mentioned (e.g. Puerto Rico) for follow-up weather asks
+            const mentioned = findCountryInText(trimmed);
+            if (mentioned?.code) {
+              const sessionRef = callStore.get(callSid);
+              if (sessionRef) {
+                sessionRef.placeHint = {
+                  country: mentioned.code,
+                  name: mentioned.name,
+                };
+              }
+            }
+
             if (responseInProgress && openaiWs?.readyState === WebSocket.OPEN) {
               openaiWs.send(JSON.stringify({ type: "response.cancel" }));
               responseInProgress = false;
             }
 
             if ((weatherService?.enabled || openMeteoService?.enabled) && isWeatherQuestion(trimmed)) {
-              const { city, country } = extractCityAndCountry(trimmed);
+              const sessionRef = callStore.get(callSid);
+              const places = extractCityAndCountry(trimmed, sessionRef?.placeHint);
               (async () => {
                 try {
-                  const result = openMeteoService?.enabled
-                    ? await openMeteoService.getByCity(city, country)
-                    : await weatherService.getByCity(city, country);
-                  const fact = result.error
-                    ? result.error
-                    : `${result.temp} degrees and ${result.description} in ${result.city}`;
-                  logger.info({ callSid, city, fact }, "Weather fast path");
-                  sendReply(fact, { multilingual: !result.error });
+                  const facts = [];
+                  for (const place of places) {
+                    const result = await fetchWeatherForPlace(
+                      place,
+                      openMeteoService,
+                      weatherService
+                    );
+                    facts.push(formatWeatherFact(result));
+                    logger.info(
+                      { callSid, city: place.city, country: place.country, result },
+                      "Weather fast path"
+                    );
+                  }
+                  const fact =
+                    facts.length > 1
+                      ? facts.join(" And ")
+                      : facts[0] || "I couldn't get the weather right now.";
+                  const hadError = facts.every(
+                    (f) =>
+                      /couldn't|not found|Please share|not configured|Could not/i.test(
+                        f
+                      )
+                  );
+                  sendReply(fact, { multilingual: !hadError });
                 } catch (err) {
                   logger.error({ callSid, err: err.message }, "Weather fast path failed");
                   sendReply("I couldn't get the weather right now.", { multilingual: false });
@@ -695,18 +783,40 @@ function createMediaStreamHandler({
             logger.info({ callSid, reply: ev.transcript, role: "assistant" }, `AI: ${aiLog}`);
           }
 
-          if (ev.type === "response.done" && weatherService?.enabled) {
+          if (
+            ev.type === "response.done" &&
+            (weatherService?.enabled || openMeteoService?.enabled)
+          ) {
             const out = ev.response?.output?.[0];
             if (out?.type === "function_call" && out.name === "get_weather" && out.call_id) {
               let args = {};
               try {
                 args = JSON.parse(out.arguments || "{}");
               } catch (_) {}
-              const city = args.city || "unknown";
-              const country = args.country || undefined;
+              const sessionRef = callStore.get(callSid);
+              let city = args.city || "unknown";
+              let country =
+                normalizeCountryCode(args.country) ||
+                sessionRef?.placeHint?.country ||
+                undefined;
+
+              // Country-only tool call
+              const cityAsCountry = normalizeCountryCode(city);
+              if (cityAsCountry) {
+                country = country || cityAsCountry;
+                city = defaultCityForCountry(cityAsCountry) || city;
+              }
+              if ((!city || /^unknown$/i.test(city)) && country) {
+                city = defaultCityForCountry(country) || city;
+              }
+
               (async () => {
                 try {
-                  const result = await weatherService.getByCity(city, country);
+                  const result = await fetchWeatherForPlace(
+                    { city, country },
+                    openMeteoService,
+                    weatherService
+                  );
                   const output = JSON.stringify(result);
                   openaiWs.send(
                     JSON.stringify({
@@ -719,7 +829,7 @@ function createMediaStreamHandler({
                     })
                   );
                   openaiWs.send(JSON.stringify({ type: "response.create" }));
-                  logger.info({ callSid, city, result }, "Weather tool result");
+                  logger.info({ callSid, city, country, result }, "Weather tool result");
                 } catch (err) {
                   logger.error({ callSid, err: err.message }, "Weather tool failed");
                   openaiWs.send(

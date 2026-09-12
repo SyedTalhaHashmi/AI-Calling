@@ -99,21 +99,21 @@ Travelers	Lost abroad with no WiFi?	Call AI for directions, translation, restaur
 
  
 2.7  Pricing Section
-Feature	Starter $9/mo	Pro $29/mo	Gold $79/mo
-AI Conversation	30 minutes	2 hours	10 hours
-Phone Numbers	1	3	6
-Emails (for transcripts)	1	3	6
-Voice Quality	Standard	Premium ElevenLabs	Ultra HD
-Call History	Yes	Yes	Yes
-Transcripts to Email	Per phone number	Per phone number	Per phone number
-Support	Email	Priority	24/7 Dedicated
-Custom AI Persona	No	Yes	Yes
-API Access	No	No	Yes
-White-Label	No	No	Yes
-Analytics	Basic	Advanced	Full Suite
-SMS Time Alerts	5 min + 2 min warning	5 min + 2 min warning	5 min + 2 min warning
-Coupon field in signup	Yes	Yes	Yes
-NOTE:  Pro plan is "Most Popular" — feature it with a cyan border, slightly scaled up, and a badge.
+Feature	Pay-As-You-Go $0.59/min	Silver $9/mo	Gold $29/mo	Platinum $69/mo
+AI Conversation	Per minute used	20 minutes	60 minutes	150 minutes + $0.55/min overage
+Phone Numbers	1	1	3	6
+Emails (for transcripts)	1	1	3	6
+Voice Quality	Standard	Standard	Premium ElevenLabs	Ultra HD
+Call History	Yes	Yes	Yes	Yes
+Transcripts to Email	Per phone number	Per phone number	Per phone number	Per phone number
+Support	Email	Email	Priority	24/7 Dedicated
+Custom AI Persona	No	No	Yes	Yes
+API Access	No	No	No	Yes
+White-Label	No	No	No	Yes
+Analytics	Basic	Basic	Advanced	Full Suite
+SMS Time Alerts	—	5 min + 2 min warning	5 min + 2 min warning	5 min + 2 min warning
+Coupon field in signup	Yes	Yes	Yes	Yes
+NOTE:  Gold plan is "Most Popular" — feature it with a cyan border, slightly scaled up, and a badge.
 
 2.8  Technology Section
 9 cards in a 4-column grid. Each card shows only the technology logo + name. No descriptions (except Brash3D which spans all 4 columns with a description).
@@ -179,7 +179,7 @@ Country	Dropdown select	Required — United States or Canada ONLY
 Password	Password input	Required, min 8 chars, 1 uppercase, 1 number
 
 4.3  Plan Selector
-•	Three plan options displayed as clickable cards: Starter $9/mo · Pro $29/mo · Gold ✦ $79/mo
+•	Three plan options displayed as clickable cards: Silver $9/mo · Gold $29/mo · Platinum ✦ $69/mo (plus Pay-As-You-Go $0.59/min)
 •	Default selected: Pro
 •	Selecting a plan dynamically changes the phone number + email rows below (see Section 4.4)
 
@@ -285,9 +285,10 @@ Currency	USD
 Starter Product ID	prod_starter (create in Stripe dashboard)
 Pro Product ID	prod_pro
 Gold Product ID	prod_gold
-Starter Price	$9.00/month — allocates 1,800 seconds (30 min)
-Pro Price	$29.00/month — allocates 7,200 seconds (2 hours)
-Gold Price	$79.00/month — allocates 36,000 seconds (10 hours)
+Starter Price	$9.00/month — allocates 1,200 seconds (20 min)
+Pro Price	$29.00/month — allocates 3,600 seconds (60 minutes)
+Gold Price	$69.00/month — allocates 9,000 seconds (150 minutes) + $0.55/min overage
+Pay-As-You-Go	$0.59/minute — no monthly fee (recharge / metered)
 
 6.2  Stripe Webhook Events to Handle
 Event	Action
@@ -355,7 +356,7 @@ IMPORTANT:  Commission rates are FIXED: Starter = 5%, Pro = 7%, Gold = 9%. These
 Plan Referred	Subscription Price	Commission Rate	Affiliate Earns / Month
 Starter	$9.00/mo	5%	$0.45/mo recurring per referral
 Pro	$29.00/mo	7%	$2.03/mo recurring per referral
-Gold ✦	$79.00/mo	9%	$7.11/mo recurring per referral
+Gold ✦	$69.00/mo	9%	$6.21/mo recurring per referral
 
 9.2  Affiliate Program Rules
 •	Cookie duration: 90 days from first click of affiliate link
@@ -442,7 +443,7 @@ STRIPE_SECRET_KEY	Stripe live secret key
 STRIPE_WEBHOOK_SECRET	Stripe webhook signing secret
 STRIPE_STARTER_PRICE_ID	Stripe price ID for $9 plan
 STRIPE_PRO_PRICE_ID	Stripe price ID for $29 plan
-STRIPE_GOLD_PRICE_ID	Stripe price ID for $79 plan
+STRIPE_GOLD_PRICE_ID	Stripe price ID for $69 Platinum plan (or use DISPLAY_PRICE_* dynamic prices)
 OPENAI_API_KEY	OpenAI ChatGPT key
 ANTHROPIC_API_KEY	Claude (Anthropic) key
 GOOGLE_GEMINI_API_KEY	Gemini key
@@ -506,7 +507,7 @@ Both legal documents are implemented as inline modals (not separate pages). They
 •	Service available: United States and Canada only
 •	AI not a substitute for medical, legal, financial, or emergency advice
 •	Call quality depends on carrier and signal strength — Brash3D Media Group not liable
-•	Plan limits: Starter 30min, Pro 2hrs, Gold 10hrs — no rollover
+•	Plan limits: Silver 20min, Gold 60min, Platinum 150min (+ $0.55/min overage) — no rollover; PAYG $0.59/min
 •	SMS alerts at 5 min and 2 min before expiry
 •	Affiliate program: 5% Starter, 7% Pro, 9% Gold — 90-day cookie — self-referral prohibited
 •	Refunds: full within 48hrs if no calls made. No refund after usage.

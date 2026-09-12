@@ -559,16 +559,16 @@ tr:hover td { background: rgba(255,255,255,0.02); }
         <label class="form-label">Select Plan</label>
         <div class="plan-picker">
           <div class="plan-opt" onclick="selectPlan(this,'starter')">
-            <div class="po-name">Starter</div>
+            <div class="po-name">Silver</div>
             <div class="po-price">$9/mo</div>
           </div>
           <div class="plan-opt selected" onclick="selectPlan(this,'pro')">
-            <div class="po-name">Pro</div>
+            <div class="po-name">Gold</div>
             <div class="po-price">$29/mo</div>
           </div>
           <div class="plan-opt" onclick="selectPlan(this,'gold')">
-            <div class="po-name">Gold</div>
-            <div class="po-price">$79/mo</div>
+            <div class="po-name">Platinum</div>
+            <div class="po-price">$69/mo</div>
           </div>
         </div>
       </div>
@@ -653,7 +653,7 @@ tr:hover td { background: rgba(255,255,255,0.02); }
           <div class="stat-card">
             <div class="stat-label">Minutes Used</div>
             <div class="stat-value">74</div>
-            <div class="stat-sub">of 120 min this month</div>
+            <div class="stat-sub">of 60 min this month</div>
             <div class="stat-trend up">↑ 18% vs last month</div>
           </div>
           <div class="stat-card">
@@ -881,10 +881,20 @@ tr:hover td { background: rgba(255,255,255,0.02); }
 
         <div class="plan-grid" style="margin-bottom:28px">
           <div class="plan-card">
-            <div class="plan-name2">Starter</div>
+            <div class="plan-name2">Pay-As-You-Go</div>
+            <div class="plan-price2"><sup>$</sup>0.59</div>
+            <div class="plan-period">/ minute</div>
+            <div class="plan-feat">No monthly fee</div>
+            <div class="plan-feat">1 phone number</div>
+            <div class="plan-feat">Call history</div>
+            <div class="plan-feat">Transcripts to email</div>
+            <div class="plan-cta"><button class="btn btn-ghost" style="width:100%">Use Recharge</button></div>
+          </div>
+          <div class="plan-card">
+            <div class="plan-name2">Silver</div>
             <div class="plan-price2"><sup>$</sup>9</div>
             <div class="plan-period">/ month</div>
-            <div class="plan-feat">30 min / month</div>
+            <div class="plan-feat">20 min / month</div>
             <div class="plan-feat">1 phone number</div>
             <div class="plan-feat">Call history</div>
             <div class="plan-feat">Transcripts to email</div>
@@ -892,10 +902,10 @@ tr:hover td { background: rgba(255,255,255,0.02); }
           </div>
           <div class="plan-card current">
             <div class="plan-badge-corner"><span class="badge badge-cyan">CURRENT</span></div>
-            <div class="plan-name2">Pro</div>
+            <div class="plan-name2">Gold</div>
             <div class="plan-price2"><sup>$</sup>29</div>
             <div class="plan-period">/ month</div>
-            <div class="plan-feat">120 min / month</div>
+            <div class="plan-feat">60 min / month</div>
             <div class="plan-feat">3 phone numbers</div>
             <div class="plan-feat">Premium voice</div>
             <div class="plan-feat">Call history + transcripts</div>
@@ -903,16 +913,15 @@ tr:hover td { background: rgba(255,255,255,0.02); }
             <div class="plan-cta"><button class="btn btn-outline" style="width:100%;cursor:default">Active Plan</button></div>
           </div>
           <div class="plan-card">
-            <div class="plan-name2">Gold</div>
-            <div class="plan-price2"><sup>$</sup>79</div>
+            <div class="plan-name2">Platinum</div>
+            <div class="plan-price2"><sup>$</sup>69</div>
             <div class="plan-period">/ month</div>
-            <div class="plan-feat">600 min / month</div>
+            <div class="plan-feat">150 min / month</div>
+            <div class="plan-feat">Then $0.55/min overage</div>
             <div class="plan-feat">6 phone numbers</div>
             <div class="plan-feat">Ultra HD voice</div>
             <div class="plan-feat">Transcripts + history</div>
-            <div class="plan-feat">API access</div>
-            <div class="plan-feat">Dedicated support</div>
-            <div class="plan-cta"><button class="btn btn-cyan" style="width:100%" onclick="showToast('🚀 Upgrading to Gold Plan...')">Upgrade to Gold</button></div>
+            <div class="plan-cta"><button class="btn btn-cyan" style="width:100%" onclick="showToast('Upgrading to Platinum...')">Upgrade to Platinum</button></div>
           </div>
         </div>
 
@@ -1074,7 +1083,7 @@ tr:hover td { background: rgba(255,255,255,0.02); }
             <div class="tier-icon">🥇</div>
             <div class="tier-name">Gold Referral</div>
             <div class="tier-rate">9%</div>
-            <div class="tier-plan">= $7.11/mo per user</div>
+            <div class="tier-plan">= $6.21/mo per user</div>
           </div>
         </div>
 
@@ -1091,7 +1100,7 @@ tr:hover td { background: rgba(255,255,255,0.02); }
             </div>
             <div class="card" style="margin-top:16px;background:var(--bg3)">
               <div style="font-size:13px;color:var(--text2);margin-bottom:8px">90-day cookie · Monthly payouts · PayPal or Bank Transfer</div>
-              <div style="font-size:13px;color:var(--text2)">Refer 10 Gold users → earn <strong style="color:var(--cyan)">$71.10/month</strong> passively!</div>
+              <div style="font-size:13px;color:var(--text2)">Refer 10 Gold users → earn <strong style="color:var(--cyan)">$62.10/month</strong> passively!</div>
             </div>
           </div>
           <div class="card">
@@ -1360,8 +1369,8 @@ function selectPlan(el, plan) {
   updateOrderSummary();
 }
 function updateOrderSummary() {
-  const prices = { starter: 9, pro: 29, gold: 79 };
-  const names = { starter: 'Starter Plan', pro: 'Pro Plan', gold: 'Gold Plan' };
+  const prices = { starter: 9, pro: 29, gold: 69 };
+  const names = { starter: 'Silver Plan', pro: 'Gold Plan', gold: 'Platinum Plan' };
   const base = prices[selectedPlan];
   document.querySelector('#orderSummary .summary-row:first-child span:first-child').textContent = names[selectedPlan];
   document.querySelector('#orderSummary .summary-row:first-child span:last-child').textContent = `$${base}.00/mo`;

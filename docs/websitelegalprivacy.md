@@ -178,7 +178,7 @@ If you are using the Services on behalf of a company or other legal entity, you 
 •	You are responsible for maintaining the confidentiality of your account credentials
 •	You must notify us immediately of any unauthorized use of your account
 •	You may not create multiple accounts to circumvent usage limits or bans
-•	One registered phone number per Starter plan; 3 per Pro plan; 6 per Gold plan
+•	One registered phone number per Silver plan; 3 per Gold plan; 6 per Platinum plan
 
 3.  Description of Services
 
@@ -215,19 +215,22 @@ We strive to maintain 99.9% platform uptime but cannot guarantee uninterrupted s
 5.  Subscription Plans, Billing & Refunds
 
 5.1  Plans and Pricing
-	Starter	Pro	Gold
-Monthly Price	$9 USD	$29 USD	$79 USD
-Talk Time	30 minutes	2 hours	10 hours
-Phone Numbers	1	3	6
-Billing Cycle	Monthly	Monthly	Monthly
+	Pay-As-You-Go	Silver	Gold	Platinum
+Price	$0.59/min (no monthly fee)	$9 USD	$29 USD	$69 USD
+Talk Time	Billed per minute	20 minutes	60 minutes	150 minutes, then $0.55/min overage
+Phone Numbers	1	1	3	6
+Billing Cycle	Usage	Monthly	Monthly	Monthly
 
 5.2  Billing Terms
 •	All prices are in USD. Applicable taxes may be added based on your jurisdiction
-•	Subscriptions are billed monthly, beginning on the date of your initial payment
+•	Subscriptions (Silver, Gold, Platinum) are billed monthly, beginning on the date of your initial payment
 •	Your subscription automatically renews each month unless cancelled
-•	Talk time is allocated on a monthly basis and does not roll over to the next billing period
-•	Call minutes are deducted in real time during calls. Once your allocation is exhausted, your call will be ended
-•	You will receive SMS warnings at 5 minutes and 2 minutes before your time runs out
+•	Talk time on monthly plans is allocated on a monthly basis and does not roll over to the next billing period
+•	Call minutes are deducted in real time during calls
+•	Silver and Gold: once your allocation is exhausted, your call will be ended until you recharge or upgrade
+•	Platinum: once included minutes are exhausted, calls continue at $0.55/min overage (no mid-call cutoff)
+•	Pay-As-You-Go has no monthly fee; usage is charged at $0.59 per minute
+•	You will receive SMS warnings at 5 minutes and 2 minutes before your included time runs out (monthly plans)
 •	Additional time may be purchased as a one-time recharge at www.buddycallai.com/recharge
 
 5.3  Cancellation

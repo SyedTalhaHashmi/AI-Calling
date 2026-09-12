@@ -78,6 +78,7 @@ function createCallRoutes({ logger, callStore, services, config }) {
         } else if (check.mode === "trial" && check.maxSecondsThisCall > 0) {
           session.maxBillableSeconds = check.maxSecondsThisCall;
         }
+        // overage / subscriber_platinum: no hard cap — Platinum continues past included minutes
       }
 
       logger.info(
@@ -175,6 +176,15 @@ function createCallRoutes({ logger, callStore, services, config }) {
           .reportUsage({
             userId: session.platformUserId,
             secondsConsumed: durationSeconds,
+            billingMode: mode,
+          })
+          .catch(() => {});
+      } else if (mode === "subscriber_platinum" || mode === "overage") {
+        services.platformApi
+          .reportUsage({
+            userId: session.platformUserId,
+            secondsConsumed: durationSeconds,
+            billingMode: mode,
           })
           .catch(() => {});
       } else if (mode === "trial") {

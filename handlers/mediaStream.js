@@ -6,11 +6,19 @@ const WebSocket = require("ws");
 const { twilioToOpenAI, openAIToTwilio } = require("../services/audioConvert");
 const { SYSTEM_PROMPT } = require("../utils/callStore");
 const {
-  extractWeatherPlaces,
   findCountryInText,
   normalizeCountryCode,
   defaultCityForCountry,
 } = require("../utils/placeResolve");
+const {
+  resolveIntent,
+  extractTravelRoute,
+  extractLocation,
+  extractCityAndCountry,
+  extractNewsQuery,
+  extractFlightNumber,
+  extractCurrencies,
+} = require("../utils/intentRouter");
 
 const OPENAI_REALTIME_URL = "wss://api.openai.com/v1/realtime?model=gpt-realtime";
 
@@ -55,53 +63,6 @@ const WEATHER_TOOL = {
   },
 };
 
-function isWeatherQuestion(text) {
-  const t = (text || "").toLowerCase();
-  const keywords = [
-    "weather",
-    "temperature",
-    "forecast",
-    "rain",
-    "snow",
-    "sunny",
-    "hot",
-    "cold",
-    "degrees",
-    "how warm",
-    "how cold",
-    "clima",
-    "tiempo",
-    "temperatura",
-    "pronóstico",
-    "pronostico",
-    "mausam",
-    "موسم",
-  ];
-  return keywords.some((k) => t.includes(k));
-}
-
-function extractCityAndCountry(text, placeHint) {
-  const { places, countryHint } = extractWeatherPlaces(text);
-  const hintCountry =
-    normalizeCountryCode(placeHint?.country) ||
-    normalizeCountryCode(countryHint) ||
-    undefined;
-
-  if (places.length) {
-    return places.map((p) => ({
-      city: p.city,
-      country: normalizeCountryCode(p.country) || hintCountry || undefined,
-    }));
-  }
-
-  if (hintCountry) {
-    const def = defaultCityForCountry(hintCountry);
-    if (def) return [{ city: def, country: hintCountry }];
-  }
-
-  return [{ city: "unknown", country: hintCountry }];
-}
-
 function formatWeatherFact(result) {
   if (result.error) return result.error;
   const where = [result.city, result.country].filter(Boolean).join(", ");
@@ -120,210 +81,6 @@ async function fetchWeatherForPlace(place, openMeteoService, weatherService) {
     return weatherService.getByCity(city, country);
   }
   return { error: "Weather not configured." };
-}
-
-function isTimeQuestion(text) {
-  const t = (text || "").toLowerCase();
-  return /\b(time|what time|current time|what's the time|timezone|what time is it)\b/i.test(t) || /time\s+in\s+/i.test(t);
-}
-
-function isSportsQuestion(text) {
-  const t = (text || "").toLowerCase();
-  const keywords = ["score", "scores", "game", "match", "sports", "who won", "basketball", "football", "soccer", "nba", "nfl", "mlb", "live match", "live game"];
-  return keywords.some((k) => t.includes(k));
-}
-
-function isFlightQuestion(text) {
-  const t = (text || "").toLowerCase();
-  return /\b(flight|flight status|is flight|where is flight|flight number)\b/i.test(t) || /flight\s+[a-z]{2}\s*\d+/i.test(t);
-}
-
-function extractFlightNumber(text) {
-  const match = (text || "").match(/\b([A-Za-z]{2})\s*(\d{2,4})\b/);
-  if (match) return (match[1] + match[2]).toUpperCase();
-  const fallback = (text || "").match(/([A-Za-z]{2}\d{2,4})/);
-  return fallback ? fallback[1].toUpperCase() : null;
-}
-
-function isCryptoQuestion(text) {
-  const t = (text || "").toLowerCase();
-  return /\b(bitcoin|btc|ethereum|eth|solana|dogecoin|doge|crypto|cryptocurrency|ripple|xrp|cardano)\b/i.test(
-    t
-  );
-}
-
-function isRatesQuestion(text) {
-  const t = (text || "").toLowerCase();
-  return (
-    /\b(interest rate|interest rates|fed funds|federal funds|treasury yield|treasury rate|bank rate|savings rate|apy)\b/i.test(
-      t
-    ) ||
-    (/\brates?\b/i.test(t) &&
-      /\b(u\.?s\.?|united states|fed|federal|bank|banks|savings)\b/i.test(t))
-  );
-}
-
-function isStockQuestion(text) {
-  if (isCryptoQuestion(text) || isRatesQuestion(text)) return false;
-  const t = (text || "").toLowerCase();
-  return (
-    /\b(stock|stocks|share price|share price of|ticker|quote)\b/i.test(t) ||
-    /\b(price of|how much is)\s+(apple|google|microsoft|amazon|meta|tesla|nvidia|netflix|[a-z]{1,5}\s+stock)\b/i.test(
-      t
-    ) ||
-    /\b(AAPL|GOOGL|MSFT|AMZN|META|TSLA|NVDA|NFLX)\b/i.test(t)
-  );
-}
-
-function isNewsQuestion(text) {
-  return /\b(news|headline|headlines|latest news|breaking)\b/i.test(text || "");
-}
-
-function isExchangeQuestion(text) {
-  const t = (text || "").toLowerCase();
-  return (
-    /\b(exchange rate|currency|convert|conversion|forex|usd|eur|inr|pkr|aed|gbp|cop|mxn)\b/i.test(t) ||
-    /\b(peso|pesos|dollar|dollars|euro|euros|pound|pounds|yen|yuan|real|reais)\b/i.test(t)
-  );
-}
-
-function isHotelQuestion(text) {
-  return /\b(hotel|hotels|stay|accommodation|room price|hotel price)\b/i.test(text || "");
-}
-
-function isFoodQuestion(text) {
-  return /\b(food|restaurant|restaurants|eat|dining|best food|best restaurant)\b/i.test(text || "");
-}
-
-function isTravelPriceQuestion(text) {
-  const t = (text || "").toLowerCase();
-  if (
-    /\b(flight price|ticket price|cheapest flight|cheap flight|fare|ticket fare|plane ticket|airfare|flight cost|travel cost)\b/i.test(
-      t
-    ) ||
-    /\b(average\s+price|price\s+to\s+travel|cost\s+to\s+(fly|travel)|how\s+much\s+(does\s+it\s+cost\s+)?to\s+(fly|travel))\b/i.test(
-      t
-    ) ||
-    /\b(precio(s)?\s+del?\s+(vuelo|tiquete|boleto|pasaje)|cu[aá]nto\s+cuesta\s+un?\s+(tiquete|boleto|pasaje|vuelo))\b/i.test(
-      t
-    ) ||
-    /\b(viajar|viaje)\s+de\s+.+\s+a\s+.+\b/i.test(t) ||
-    /\b(tiquete|boleto|pasaje)(s)?\b/i.test(t) ||
-    /\b(buy|book|get)\s+(a\s+)?(plane\s+)?ticket/i.test(t) ||
-    /\bticket(s)?\s+(to|from|for)\b/i.test(t) ||
-    /\b(fly|flying|flight)\s+(from|to)\b/i.test(t) ||
-    /\b(recommend|suggest)\s+.*\b(ticket|flight)\b/i.test(t)
-  ) {
-    return true;
-  }
-  // "travel … Bogotá … Miami" style — two known cities + travel wording
-  if (/\b(travel|travelling|traveling|trip|fly|flight)\b/i.test(t)) {
-    const route = extractRouteFromCityNames(t);
-    if (route.origin && route.destination) return true;
-  }
-  return false;
-}
-
-function extractTopic(text) {
-  const match = (text || "").match(/\babout\s+([a-z0-9\s-]+?)(?:\?|$)/i);
-  return match ? match[1].trim() : "";
-}
-
-/** e.g. "latest news from Colombia" -> "Colombia" */
-function extractNewsQuery(text) {
-  const t = text || "";
-  let m = t.match(/\b(?:latest\s+)?news\s+(?:from|in|about)\s+([a-zA-ZÀ-ÿ\s]+?)(?:\?|\.|$)/i);
-  if (m) return m[1].trim();
-  m = t.match(/\bheadlines?\s+(?:from|in|about)\s+([a-zA-ZÀ-ÿ\s]+?)(?:\?|\.|$)/i);
-  if (m) return m[1].trim();
-  m = t.match(/\bbreaking\s+(?:news\s+)?(?:from|in)\s+([a-zA-ZÀ-ÿ\s]+?)(?:\?|\.|$)/i);
-  if (m) return m[1].trim();
-  return extractTopic(t);
-}
-
-/** Clinic / hospital / pharmacy — needs Google Places + key. */
-function isLocalServiceQuestion(text) {
-  const t = (text || "").toLowerCase();
-  if (!/\b(clinic|clinics|hospital|hospitals|pharmacy|pharmacies|dentist|urgent care|walk-?in)\b/.test(t)) {
-    return false;
-  }
-  return (
-    /\b(near|nearest|closest|around|unicentro|find|where's|where is)\b/i.test(t) ||
-    /\b(in|near)\s+[a-zà-ÿ]{4,}/i.test(t)
-  );
-}
-
-/** City name -> IATA for common routes (speech rarely includes airport codes). */
-const CITY_IATA_ENTRIES = [
-  ["new york", "JFK"],
-  ["los angeles", "LAX"],
-  ["mexico city", "MEX"],
-  ["são paulo", "GRU"],
-  ["sao paulo", "GRU"],
-  ["buenos aires", "EZE"],
-  ["bogotá", "BOG"],
-  ["bogota", "BOG"],
-  ["medellín", "MDE"],
-  ["medellin", "MDE"],
-  ["cartagena", "CTG"],
-  ["barranquilla", "BAQ"],
-  ["cali", "CLO"],
-  ["miami", "MIA"],
-  ["orlando", "MCO"],
-  ["chicago", "ORD"],
-  ["dallas", "DFW"],
-  ["houston", "IAH"],
-  ["lima", "LIM"],
-  ["santiago", "SCL"],
-  ["london", "LHR"],
-  ["paris", "CDG"],
-  ["rome", "FCO"],
-  ["madrid", "MAD"],
-  ["toronto", "YYZ"],
-  ["dubai", "DXB"],
-  ["tokyo", "NRT"],
-  ["delhi", "DEL"],
-  ["karachi", "KHI"],
-].sort((a, b) => b[0].length - a[0].length);
-
-function extractRouteFromCityNames(text) {
-  const lower = (text || "").toLowerCase();
-  const hits = [];
-  for (const [city, code] of CITY_IATA_ENTRIES) {
-    const idx = lower.indexOf(city);
-    if (idx !== -1) hits.push({ idx, code });
-  }
-  hits.sort((a, b) => a.idx - b.idx);
-  const codes = [];
-  const seen = new Set();
-  for (const h of hits) {
-    if (seen.has(h.code)) continue;
-    seen.add(h.code);
-    codes.push(h.code);
-    if (codes.length >= 2) break;
-  }
-  return { origin: codes[0] || null, destination: codes[1] || null };
-}
-
-function extractCurrencies(text) {
-  const symbols = String(text || "")
-    .toUpperCase()
-    .match(/\b[A-Z]{3}\b/g);
-  if (!symbols || symbols.length < 2) return { base: null, quote: null };
-  return { base: symbols[0], quote: symbols[1] };
-}
-
-function extractLocation(text) {
-  const m = String(text || "").match(/\b(?:in|at|near|around)\s+([a-zA-Z\s]+?)(?:\?|\.|$)/i);
-  return m ? m[1].trim().replace(/\s+/g, " ") : "";
-}
-
-function extractRouteIata(text) {
-  const codes = String(text || "")
-    .toUpperCase()
-    .match(/\b[A-Z]{3}\b/g);
-  if (!codes || codes.length < 2) return { origin: null, destination: null };
-  return { origin: codes[0], destination: codes[1] };
 }
 
 const TIME_UP_INSTRUCTION =
@@ -483,12 +240,14 @@ function createMediaStreamHandler({
               opts.multilingual
                 ? `Say the following in one short sentence using the caller's language (15 to 20 words max): ${reply}.`
                 : `Say exactly: ${reply}`;
+            // No tools on fast-path replies — prevents double weather/hotel answers
             openaiWs.send(
               JSON.stringify({
                 type: "response.create",
-                response: { instructions: instruction },
+                response: { instructions: instruction, tools: [] },
               })
             );
+            responseInProgress = true;
             callStore.addAssistantMessage(callSid, reply);
             transcriptLines.push(`AI: ${reply}`);
             const aiReplyLog = reply.length > 100 ? reply.slice(0, 100) + "…" : reply;
@@ -505,24 +264,32 @@ function createMediaStreamHandler({
             transcriptLines.push(`Caller: ${trimmed}`);
             callStore.addUserMessage(callSid, trimmed);
 
-            // Remember last country/territory mentioned (e.g. Puerto Rico) for follow-up weather asks
-            const mentioned = findCountryInText(trimmed);
-            if (mentioned?.code) {
-              const sessionRef = callStore.get(callSid);
-              if (sessionRef) {
-                sessionRef.placeHint = {
-                  country: mentioned.code,
-                  name: mentioned.name,
-                };
-              }
-            }
-
             if (responseInProgress && openaiWs?.readyState === WebSocket.OPEN) {
               openaiWs.send(JSON.stringify({ type: "response.cancel" }));
               responseInProgress = false;
             }
 
-            if ((weatherService?.enabled || openMeteoService?.enabled) && isWeatherQuestion(trimmed)) {
+            const intent = resolveIntent(trimmed);
+            logger.info({ callSid, intent }, "Intent resolved");
+
+            // Weather-only place memory — do not leak Colombia hint onto hotel/Miami asks
+            if (intent === "weather") {
+              const mentioned = findCountryInText(trimmed);
+              if (mentioned?.code) {
+                const sessionRef = callStore.get(callSid);
+                if (sessionRef) {
+                  sessionRef.placeHint = {
+                    country: mentioned.code,
+                    name: mentioned.name,
+                  };
+                }
+              }
+            }
+
+            if (
+              intent === "weather" &&
+              (weatherService?.enabled || openMeteoService?.enabled)
+            ) {
               const sessionRef = callStore.get(callSid);
               const places = extractCityAndCountry(trimmed, sessionRef?.placeHint);
               (async () => {
@@ -558,7 +325,7 @@ function createMediaStreamHandler({
               })();
               return;
             }
-            if (timeService?.enabled && isTimeQuestion(trimmed)) {
+            if (intent === "time" && timeService?.enabled) {
               const tz = timeService.resolveTimezone(trimmed);
               (async () => {
                 if (tz && worldTimeService?.enabled) {
@@ -574,7 +341,7 @@ function createMediaStreamHandler({
               })();
               return;
             }
-            if (newsService?.enabled && isNewsQuestion(trimmed)) {
+            if (intent === "news" && newsService?.enabled) {
               const topic = extractNewsQuery(trimmed);
               (async () => {
                 const result = await newsService.topHeadlines(topic);
@@ -585,7 +352,7 @@ function createMediaStreamHandler({
               })();
               return;
             }
-            if (fxService?.enabled && isExchangeQuestion(trimmed)) {
+            if (intent === "fx" && fxService?.enabled) {
               const iso = extractCurrencies(trimmed);
               const spoken = fxService.parsePairFromUtterance(trimmed);
               const base = iso.base || spoken.base;
@@ -599,7 +366,7 @@ function createMediaStreamHandler({
               })();
               return;
             }
-            if (placesService?.enabled && isLocalServiceQuestion(trimmed)) {
+            if (intent === "local_service" && placesService?.enabled) {
               (async () => {
                 const result = await placesService.searchText(trimmed.slice(0, 200));
                 const fact = result.error
@@ -609,7 +376,7 @@ function createMediaStreamHandler({
               })();
               return;
             }
-            if (placesService?.enabled && isHotelQuestion(trimmed)) {
+            if (intent === "hotel" && placesService?.enabled) {
               const location = extractLocation(trimmed);
               (async () => {
                 const result = await placesService.searchHotels(location);
@@ -620,7 +387,7 @@ function createMediaStreamHandler({
               })();
               return;
             }
-            if (placesService?.enabled && isFoodQuestion(trimmed)) {
+            if (intent === "food" && placesService?.enabled) {
               const location = extractLocation(trimmed);
               (async () => {
                 const result = await placesService.searchFood(location);
@@ -631,13 +398,8 @@ function createMediaStreamHandler({
               })();
               return;
             }
-            if (travelService?.enabled && isTravelPriceQuestion(trimmed)) {
-              let { origin, destination } = extractRouteIata(trimmed);
-              if (!origin || !destination) {
-                const byCity = extractRouteFromCityNames(trimmed);
-                if (!origin) origin = byCity.origin;
-                if (!destination) destination = byCity.destination;
-              }
+            if (intent === "travel_price" && travelService?.enabled) {
+              const { origin, destination } = extractTravelRoute(trimmed);
               logger.info(
                 {
                   callSid,
@@ -663,7 +425,7 @@ function createMediaStreamHandler({
               })();
               return;
             }
-            if (sportsService?.enabled && isSportsQuestion(trimmed)) {
+            if (intent === "sports" && sportsService?.enabled) {
               const sportKey = sportsService.detectSport(trimmed);
               (async () => {
                 try {
@@ -682,7 +444,7 @@ function createMediaStreamHandler({
               })();
               return;
             }
-            if (flightsService?.enabled && isFlightQuestion(trimmed)) {
+            if (intent === "flight_status" && flightsService?.enabled) {
               const flightIata = extractFlightNumber(trimmed);
               (async () => {
                 try {
@@ -697,7 +459,7 @@ function createMediaStreamHandler({
               })();
               return;
             }
-            if (stocksService?.enabled && isCryptoQuestion(trimmed)) {
+            if (intent === "crypto" && stocksService?.enabled) {
               (async () => {
                 try {
                   const result = await stocksService.getCryptoQuote(trimmed);
@@ -714,7 +476,7 @@ function createMediaStreamHandler({
               })();
               return;
             }
-            if (stocksService?.enabled && isRatesQuestion(trimmed)) {
+            if (intent === "rates" && stocksService?.enabled) {
               (async () => {
                 try {
                   const result = await stocksService.getUsInterestRate();
@@ -731,7 +493,7 @@ function createMediaStreamHandler({
               })();
               return;
             }
-            if (stocksService?.enabled && isStockQuestion(trimmed)) {
+            if (intent === "stocks" && stocksService?.enabled) {
               (async () => {
                 try {
                   const result = await stocksService.getQuote(trimmed);

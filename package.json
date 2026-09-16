@@ -4,10 +4,11 @@
   "description": "MVP AI phone assistant using Twilio, Deepgram, OpenAI, and ElevenLabs",
   "main": "server.js",
   "scripts": {
-    "build": "node --check server.js",
+    "build": "node --check server.js && node --check handlers/mediaStream.js && node --check utils/intentRouter.js",
     "start": "node server.js",
     "dev": "node --watch server.js",
-    "test": "echo \"No tests configured\""
+    "test": "node test/intentRouter.test.js",
+    "test:live": "node test/liveApiSmoke.test.js"
   },
   "keywords": [],
   "author": "",

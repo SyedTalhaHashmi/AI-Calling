@@ -133,7 +133,9 @@ function isTravelPriceQuestion(text) {
     /\bticket(s)?\s+(to|from|for)\b/i.test(t) ||
     /\b(fly|flying|flight)\s+(from|to)\b/i.test(t) ||
     /\b(recommend|suggest)\s+.*\b(ticket|flight)\b/i.test(t) ||
-    /\bprice of (the |a )?ticket\b/i.test(t)
+    /\bprice of (the |a )?ticket\b/i.test(t) ||
+    /\bticket\s+(prize|price|cost|fare)\b/i.test(t) ||
+    /\b(whats|what's|what is)\s+(the\s+)?ticket\b/i.test(t)
   ) {
     return true;
   }
@@ -299,18 +301,56 @@ function extractTravelRoute(text) {
 }
 
 function extractLocation(text) {
+  const t = String(text || "");
+  const lower = t.toLowerCase();
+
+  // If lodging words appear, prefer the city mentioned after them
+  const lodgingIdx = lower.search(
+    /\b(hotel|hotels|stay|accommodation|room price|lodging)\b/i
+  );
+  if (lodgingIdx >= 0) {
+    const after = lower.slice(lodgingIdx);
+    const origAfter = t.slice(lodgingIdx);
+    for (const [city] of CITY_IATA_ENTRIES) {
+      const idx = after.indexOf(city);
+      if (idx !== -1) {
+        return origAfter.slice(idx, idx + city.length);
+      }
+    }
+  }
+
+  // Prefer known city names when present (most reliable for speech)
+  for (const [city] of CITY_IATA_ENTRIES) {
+    if (lower.includes(city)) {
+      const idx = lower.indexOf(city);
+      return t.slice(idx, idx + city.length);
+    }
+  }
+
+  const stop = new Set([
+    "the", "a", "an", "in", "at", "near", "around", "for", "one", "night",
+    "nice", "best", "cheap", "luxury", "hotel", "hotels", "place", "stay",
+    "beach", "this", "friday", "saturday", "sunday", "monday", "today",
+    "tomorrow", "weekend", "please", "room", "price",
+  ]);
+
   const matches = [
-    ...String(text || "").matchAll(
+    ...t.matchAll(
       /\b(?:in|at|near|around)\s+([A-Za-zÀ-ÿ][A-Za-zÀ-ÿ'-]*(?:\s+[A-Za-zÀ-ÿ][A-Za-zÀ-ÿ'-]*){0,2})/gi
     ),
   ];
   if (!matches.length) return "";
-  // Last "in/at …" is usually the city ("… hotel in Miami")
-  return matches[matches.length - 1][1]
-    .trim()
-    .replace(/\b(one|night|nice|best|cheap|luxury|hotel|hotels)\b/gi, " ")
-    .replace(/\s+/g, " ")
-    .trim();
+
+  for (let i = matches.length - 1; i >= 0; i--) {
+    const cleaned = matches[i][1]
+      .trim()
+      .split(/\s+/)
+      .filter((w) => !stop.has(w.toLowerCase()))
+      .join(" ")
+      .trim();
+    if (cleaned.length >= 2) return cleaned;
+  }
+  return "";
 }
 
 /**
@@ -336,6 +376,19 @@ function extractCityAndCountry(text, placeHint) {
       city: p.city,
       country: normalizeCountryCode(p.country) || hintCountry || undefined,
     }));
+  }
+
+  // Fallback: known city name mentioned in a weather ask ("is Paris hot")
+  const lower = String(text || "").toLowerCase();
+  for (const [city] of CITY_IATA_ENTRIES) {
+    if (lower.includes(city)) {
+      return [
+        {
+          city: city.replace(/\b\w/g, (c) => c.toUpperCase()),
+          country: hintCountry || undefined,
+        },
+      ];
+    }
   }
 
   if (hintCountry) {

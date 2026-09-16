@@ -257,10 +257,16 @@ function extractWeatherPlaces(text) {
     /\b(?:weather|temperature|forecast|temp|climate)\s+(?:in|at|for|of)\s+(.+?)(?:\s*[?!]|\s*$)/i,
     // EN: in X weather
     /\bin\s+([a-zA-ZÀ-ÿ .'-]{2,60}?)\s+(?:weather|temperature|forecast)\b/i,
+    // EN: is Paris hot / is London cold
+    /\bis\s+([a-zA-ZÀ-ÿ .'-]{2,40}?)\s+(?:hot|cold|warm|sunny|rainy|freezing)\b/i,
+    // EN: will it rain in X
+    /\b(?:will it|is it going to)\s+(?:rain|snow)\s+(?:in|at|for)\s+(.+?)(?:\s*[?!]|\s*$)/i,
     // ES: clima / tiempo de|en|para X  (do not treat "St." abbreviation period as end)
     /\b(?:clima|tiempo|temperatura|pron[oó]stico)\s+(?:de|en|para|del?)\s+(.+?)(?:\s*[?!]|\s*$)/i,
     // ES: en X el clima
     /\ben\s+([a-zA-ZÀ-ÿ .'-]{2,60}?)\s+(?:el\s+)?(?:clima|tiempo|temperatura)\b/i,
+    // ES: qué tiempo hace en X
+    /\b(?:qu[eé]\s+tiempo\s+hace|c[oó]mo\s+est[aá]\s+el\s+clima)\s+(?:en|de)\s+(.+?)(?:\s*[?!]|\s*$)/i,
     // EN how warm/cold in X
     /\b(?:how\s+(?:warm|cold|hot)|temperature)\s+(?:is\s+it\s+)?(?:in|at|for)\s+(.+?)(?:\s*[?!]|\s*$)/i,
     // generic: in/at/for/of X[, country]

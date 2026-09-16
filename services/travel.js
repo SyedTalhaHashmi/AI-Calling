@@ -3,6 +3,13 @@ const { MemoryCache } = require("./cache");
 
 const BASE = "https://api.travelpayouts.com/v1/prices/cheap";
 
+/** English words that look like IATA — never send to Travelpayouts. */
+const IATA_STOPWORDS = new Set([
+  "THE", "AND", "FOR", "YOU", "CAN", "ASK", "ARE", "WAS", "NOT", "BUT", "ALL",
+  "ANY", "HOW", "WHO", "WHY", "YES", "NOW", "OUT", "GET", "GOT", "LET", "MAY",
+  "ONE", "TWO", "SIX", "TEN", "DAY", "FLY", "AIR", "BUS", "CAR", "NEW", "OLD",
+]);
+
 function createTravelService(token, logger) {
   if (!token) {
     return {
@@ -18,6 +25,12 @@ function createTravelService(token, logger) {
     const to = String(destination || "").toUpperCase();
     if (!/^[A-Z]{3}$/.test(from) || !/^[A-Z]{3}$/.test(to)) {
       return { error: "Please share origin and destination airport IATA codes, like LHE to DXB." };
+    }
+    if (IATA_STOPWORDS.has(from) || IATA_STOPWORDS.has(to)) {
+      return {
+        error:
+          "Please share origin and destination airport IATA codes, like BOG to MIA.",
+      };
     }
     const cacheKey = `travel:${from}:${to}:${currency}`;
     const cached = cache.get(cacheKey);

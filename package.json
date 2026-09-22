@@ -7,7 +7,7 @@
     "build": "node --check server.js && node --check handlers/mediaStream.js && node --check utils/intentRouter.js",
     "start": "node server.js",
     "dev": "node --watch server.js",
-    "test": "node test/intentRouter.test.js",
+    "test": "node test/intentRouter.test.js && node test/languageBilling.test.js",
     "test:live": "node test/liveApiSmoke.test.js",
     "test:complex": "node test/complexFlows.test.js",
     "test:unique": "node test/uniqueUserAsks.test.js"

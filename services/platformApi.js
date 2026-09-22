@@ -8,13 +8,16 @@ function createPlatformApi(config, logger) {
 
   const http = axios.create({
     baseURL: baseURL || "http://localhost:4000",
-    timeout: 3000,
+    timeout: 8000,
   });
 
-  async function post(path, body, headers) {
+  async function post(path, body, headers, timeoutMs) {
     if (!enabled) return { ok: false, skipped: true };
     try {
-      await http.post(path, body, { headers });
+      await http.post(path, body, {
+        headers,
+        timeout: timeoutMs || 8000,
+      });
       return { ok: true };
     } catch (err) {
       logger.warn(
@@ -58,7 +61,8 @@ function createPlatformApi(config, logger) {
     return post(
       "/api/v1/usage/trial-report",
       payload,
-      { "x-usage-secret": usageSecret }
+      { "x-usage-secret": usageSecret },
+      10000
     );
   }
 
@@ -70,21 +74,24 @@ function createPlatformApi(config, logger) {
       return post(
         "/api/v1/integrations/voice/call-start",
         payload,
-        { "x-integration-secret": integrationSecret }
+        { "x-integration-secret": integrationSecret },
+        8000
       );
     },
     notifyCallEnd(payload) {
       return post(
         "/api/v1/integrations/voice/call-end",
         payload,
-        { "x-integration-secret": integrationSecret }
+        { "x-integration-secret": integrationSecret },
+        10000
       );
     },
     reportUsage(payload) {
       return post(
         "/api/v1/usage/report",
         payload,
-        { "x-usage-secret": usageSecret }
+        { "x-usage-secret": usageSecret },
+        10000
       );
     },
   };

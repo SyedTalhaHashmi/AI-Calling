@@ -171,44 +171,45 @@ function createCallRoutes({ logger, callStore, services, config }) {
       .catch(() => {});
     if (durationSeconds > 0 && services.platformApi?.enabled) {
       const mode = session?.billingMode;
-      if (mode === "subscriber" && session?.platformUserId) {
-        services.platformApi
-          .reportUsage({
-            userId: session.platformUserId,
-            secondsConsumed: durationSeconds,
-            billingMode: mode,
-          })
-          .catch(() => {});
-      } else if (mode === "subscriber_platinum" || mode === "overage") {
-        services.platformApi
-          .reportUsage({
-            userId: session.platformUserId,
-            secondsConsumed: durationSeconds,
-            billingMode: mode,
-          })
-          .catch(() => {});
-      } else if (mode === "trial") {
+      const userId = session?.platformUserId || null;
+      // Only sync usage when we have a real platform identity or a trial number.
+      // Avoid /usage/report 404s for blocked/legacy calls with no user.
+      if (mode === "trial" && callerNumber) {
         services.platformApi
           .trialReport({
             callerNumber,
             secondsConsumed: durationSeconds,
           })
           .catch(() => {});
-      } else {
+      } else if (
+        (mode === "subscriber" ||
+          mode === "subscriber_platinum" ||
+          mode === "overage") &&
+        userId
+      ) {
         services.platformApi
           .reportUsage({
+            userId,
             callerNumber,
             secondsConsumed: durationSeconds,
+            billingMode: mode,
           })
           .catch(() => {});
+      } else if (userId) {
+        services.platformApi
+          .reportUsage({
+            userId,
+            callerNumber,
+            secondsConsumed: durationSeconds,
+            billingMode: mode || "legacy",
+          })
+          .catch(() => {});
+      } else {
+        logger.info(
+          { callSid, mode, durationSeconds },
+          "Skip platform usage sync (no platform user / non-trial)"
+        );
       }
-    } else if (durationSeconds > 0) {
-      services.platformApi
-        ?.reportUsage({
-          callerNumber,
-          secondsConsumed: durationSeconds,
-        })
-        .catch(() => {});
     }
 
     callStore.delete(callSid);

@@ -19,6 +19,16 @@ const {
   extractFlightNumber,
   extractCurrencies,
 } = require("../utils/intentRouter");
+const {
+  updateReplyLanguage,
+  languageInstruction,
+  languageLabel,
+} = require("../utils/replyLanguage");
+const {
+  isBillingQuestion,
+  billingReply,
+  billingInstruction,
+} = require("../utils/billingReply");
 
 const OPENAI_REALTIME_URL = "wss://api.openai.com/v1/realtime?model=gpt-realtime";
 
@@ -26,6 +36,16 @@ const OPENAI_REALTIME_URL = "wss://api.openai.com/v1/realtime?model=gpt-realtime
 const GREETING = "Hi! I'm Buddy, your AI friend. Ask me anything you want.";
 // Friendly voice: marin (female); alternatives: coral, shimmer, sage
 const VOICE = "marin";
+
+function buildRealtimeInstructions(session) {
+  return [
+    SYSTEM_PROMPT,
+    "",
+    "## Active call rules (authoritative — follow these)",
+    languageInstruction(session),
+    billingInstruction(session),
+  ].join("\n");
+}
 
 /** Realtime input: denoise before VAD, then stricter speech onset so noise rarely triggers barge-in. */
 const REALTIME_INPUT_AUDIO = {
@@ -161,11 +181,13 @@ function createMediaStreamHandler({
             }
             (async () => {
               try {
+                const billRef = callStore.get(callSid);
+                if (billRef) billRef.callEnding = true;
                 if (openaiWs && openaiWs.readyState === WebSocket.OPEN) {
                   openaiWs.send(
                     JSON.stringify({
                       type: "response.create",
-                      response: { instructions: TIME_UP_INSTRUCTION },
+                      response: { instructions: TIME_UP_INSTRUCTION, tools: [] },
                     })
                   );
                 }
@@ -192,9 +214,13 @@ function createMediaStreamHandler({
 
         openaiWs.on("open", () => {
           logger.info({ callSid }, "OpenAI Realtime connected");
+          const billSession = callStore.get(callSid);
+          if (billSession && !billSession.replyLanguage) {
+            billSession.replyLanguage = "en";
+          }
           const session = {
             type: "realtime",
-            instructions: SYSTEM_PROMPT,
+            instructions: buildRealtimeInstructions(billSession),
             audio: {
               input: REALTIME_INPUT_AUDIO,
               output: {
@@ -213,7 +239,7 @@ function createMediaStreamHandler({
           openaiWs.send(
             JSON.stringify({
               type: "response.create",
-              response: { instructions: `Say exactly: ${GREETING}` },
+              response: { instructions: `Say exactly: ${GREETING}`, tools: [] },
             })
           );
         });
@@ -231,14 +257,32 @@ function createMediaStreamHandler({
             return;
           }
 
+          function syncSessionInstructions() {
+            if (!openaiWs || openaiWs.readyState !== WebSocket.OPEN) return;
+            const sess = callStore.get(callSid);
+            const payload = {
+              type: "realtime",
+              instructions: buildRealtimeInstructions(sess),
+            };
+            if (weatherService && weatherService.enabled) {
+              payload.tools = [WEATHER_TOOL];
+              payload.tool_choice = "auto";
+            }
+            openaiWs.send(
+              JSON.stringify({ type: "session.update", session: payload })
+            );
+          }
+
           function sendReply(reply, opts = {}) {
             if (responseInProgress) {
               logger.info({ callSid }, "Skip fast-path: response already in progress");
               return;
             }
+            const sess = callStore.get(callSid);
+            const langName = languageLabel(sess?.replyLanguage || "en");
             const instruction =
-              opts.multilingual
-                ? `Say the following in one short sentence using the caller's language (15 to 20 words max): ${reply}.`
+              opts.multilingual !== false
+                ? `Say the following in ${langName} only, one short sentence (15 to 20 words max): ${reply}.`
                 : `Say exactly: ${reply}`;
             // No tools on fast-path replies — prevents double weather/hotel answers
             openaiWs.send(
@@ -264,9 +308,31 @@ function createMediaStreamHandler({
             transcriptLines.push(`Caller: ${trimmed}`);
             callStore.addUserMessage(callSid, trimmed);
 
+            const sessionRef = callStore.get(callSid);
+            if (sessionRef?.callEnding) {
+              logger.info({ callSid }, "Skip turn: call ending (time limit)");
+              return;
+            }
+
             if (responseInProgress && openaiWs?.readyState === WebSocket.OPEN) {
               openaiWs.send(JSON.stringify({ type: "response.cancel" }));
               responseInProgress = false;
+            }
+
+            const langUpdate = updateReplyLanguage(sessionRef, trimmed);
+            if (langUpdate.changed) {
+              logger.info(
+                { callSid, replyLanguage: langUpdate.language },
+                "Reply language updated"
+              );
+              syncSessionInstructions();
+            }
+
+            // Honest trial / plan answers — never invent unlimited free time
+            if (isBillingQuestion(trimmed)) {
+              const fact = billingReply(sessionRef);
+              sendReply(fact, { multilingual: true });
+              return;
             }
 
             const intent = resolveIntent(trimmed);
@@ -276,7 +342,6 @@ function createMediaStreamHandler({
             if (intent === "weather") {
               const mentioned = findCountryInText(trimmed);
               if (mentioned?.code) {
-                const sessionRef = callStore.get(callSid);
                 if (sessionRef) {
                   sessionRef.placeHint = {
                     country: mentioned.code,
@@ -508,7 +573,17 @@ function createMediaStreamHandler({
               return;
             }
             if (openaiWs?.readyState === WebSocket.OPEN) {
-              openaiWs.send(JSON.stringify({ type: "response.create" }));
+              const langName = languageLabel(
+                callStore.get(callSid)?.replyLanguage || "en"
+              );
+              openaiWs.send(
+                JSON.stringify({
+                  type: "response.create",
+                  response: {
+                    instructions: `Reply in ${langName} only. Keep it to 15–20 words.`,
+                  },
+                })
+              );
             }
           }
 

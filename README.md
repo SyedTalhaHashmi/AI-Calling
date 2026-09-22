@@ -117,6 +117,18 @@ Health check:
 GET http://localhost:3000/health
 ```
 
+## Test with your mic (no phone call)
+
+Uses the same `/media-stream` handler as Twilio. No Twilio minutes; OpenAI Realtime still bills normally.
+
+1. In `.env` set `ENABLE_MIC_TEST=true` (leave `false` / unset in production).
+2. Restart the voice server (`npm start` or `npm run dev`).
+3. Open `http://localhost:3000/dev/mic-test` (use your `PORT` if different).
+4. Click **Start**, allow the microphone, wait for the greeting, then ask questions.
+5. Prefer headphones to reduce echo. Click **Stop** when done.
+
+If the page 404s, the flag is off or the server was not restarted. Production should keep `ENABLE_MIC_TEST` unset/`false` so this route is not registered.
+
 ## Twilio Configuration
 
 In your Twilio phone number config:

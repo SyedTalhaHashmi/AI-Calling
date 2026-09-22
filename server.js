@@ -1,4 +1,5 @@
 const http = require("http");
+const path = require("path");
 const express = require("express");
 const WebSocket = require("ws");
 const config = require("./utils/config");
@@ -44,6 +45,14 @@ function buildServer() {
   app.get("/health", (req, res) => {
     res.status(200).json({ ok: true });
   });
+
+  // Local-only mic tester (browser → same /media-stream as Twilio). Off unless ENABLE_MIC_TEST=true.
+  if (config.micTestEnabled) {
+    app.get("/dev/mic-test", (req, res) => {
+      res.sendFile(path.join(__dirname, "dev", "mic-test.html"));
+    });
+    logger.info("Mic test page enabled at GET /dev/mic-test");
+  }
 
   app.use(
     createPublicLandingTtsRoutes({

@@ -92,6 +92,11 @@ const config = {
   landingTts: {
     provider: (process.env.LANDING_TTS_PROVIDER || "auto").trim().toLowerCase(),
   },
+  /**
+   * Local mic → /media-stream tester (browser pretends to be Twilio).
+   * Only served when ENABLE_MIC_TEST=true — keep off in production.
+   */
+  micTestEnabled: process.env.ENABLE_MIC_TEST === "true",
 };
 
 module.exports = config;

@@ -1,0 +1,445 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>BuddyCallAI — local mic test</title>
+  <style>
+    :root {
+      --bg: #12141a;
+      --panel: #1c1f28;
+      --text: #e8eaeef0;
+      --muted: #9aa3b2;
+      --accent: #3d8bfd;
+      --ok: #3ecf8e;
+      --bad: #f07178;
+      --border: #2a2f3a;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: "Segoe UI", system-ui, sans-serif;
+      background: radial-gradient(1200px 600px at 20% -10%, #1a2740, var(--bg));
+      color: var(--text);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+    }
+    main {
+      width: min(520px, 100%);
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 28px 24px;
+    }
+    h1 {
+      margin: 0 0 6px;
+      font-size: 1.25rem;
+      font-weight: 650;
+    }
+    p.lead {
+      margin: 0 0 20px;
+      color: var(--muted);
+      font-size: 0.92rem;
+      line-height: 1.45;
+    }
+    .row {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      margin-bottom: 16px;
+    }
+    button {
+      border: 0;
+      border-radius: 8px;
+      padding: 10px 16px;
+      font-size: 0.95rem;
+      font-weight: 600;
+      cursor: pointer;
+      color: #fff;
+      background: var(--accent);
+    }
+    button:disabled {
+      opacity: 0.45;
+      cursor: not-allowed;
+    }
+    button.stop {
+      background: #5a6270;
+    }
+    .status {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 14px;
+      font-size: 0.9rem;
+    }
+    .dot {
+      width: 9px;
+      height: 9px;
+      border-radius: 50%;
+      background: var(--muted);
+    }
+    .dot.live { background: var(--ok); box-shadow: 0 0 0 3px rgba(62, 207, 142, 0.25); }
+    .dot.err { background: var(--bad); }
+    .log {
+      height: 220px;
+      overflow: auto;
+      background: #0e1015;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 10px 12px;
+      font-family: ui-monospace, Consolas, monospace;
+      font-size: 0.78rem;
+      line-height: 1.4;
+      color: #c5ccd8;
+      white-space: pre-wrap;
+    }
+    .hint {
+      margin-top: 14px;
+      color: var(--muted);
+      font-size: 0.82rem;
+      line-height: 1.4;
+    }
+    code {
+      background: #0e1015;
+      padding: 1px 5px;
+      border-radius: 4px;
+      font-size: 0.85em;
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Local mic test</h1>
+    <p class="lead">
+      Talk to the same <code>/media-stream</code> bridge used by Twilio — no phone call.
+      Uses OpenAI Realtime (API cost only). Headphones recommended to reduce echo.
+    </p>
+
+    <div class="status">
+      <span class="dot" id="dot"></span>
+      <span id="statusText">Idle</span>
+    </div>
+
+    <div class="row">
+      <button id="startBtn" type="button">Start</button>
+      <button id="stopBtn" class="stop" type="button" disabled>Stop</button>
+    </div>
+
+    <div class="log" id="log" aria-live="polite"></div>
+    <p class="hint">
+      Enable with <code>ENABLE_MIC_TEST=true</code> in <code>.env</code>, restart server,
+      open <code>http://localhost:PORT/dev/mic-test</code>. This page is not served in production unless that flag is set.
+    </p>
+  </main>
+
+  <script>
+    const TWILIO_RATE = 8000;
+    const FRAME_SAMPLES = 160; // 20 ms @ 8 kHz
+
+    const startBtn = document.getElementById("startBtn");
+    const stopBtn = document.getElementById("stopBtn");
+    const logEl = document.getElementById("log");
+    const dot = document.getElementById("dot");
+    const statusText = document.getElementById("statusText");
+
+    let ws = null;
+    let mediaStream = null;
+    let audioCtx = null;
+    let processor = null;
+    let sourceNode = null;
+    let silentGain = null;
+    let streamSid = "";
+    let callSid = "";
+    let seq = 0;
+    let chunk = 0;
+    let startedAt = 0;
+    let pcmCarry = new Float32Array(0);
+    let playTime = 0;
+    let running = false;
+
+    function log(line) {
+      const t = new Date().toLocaleTimeString();
+      logEl.textContent += `[${t}] ${line}\n`;
+      logEl.scrollTop = logEl.scrollHeight;
+    }
+
+    function setStatus(text, mode) {
+      statusText.textContent = text;
+      dot.classList.remove("live", "err");
+      if (mode === "live") dot.classList.add("live");
+      if (mode === "err") dot.classList.add("err");
+    }
+
+    function mulawEncodeSample(sample) {
+      const BIAS = 0x84;
+      const CLIP = 32635;
+      let s = sample < 0 ? -sample : sample;
+      if (s > CLIP) s = CLIP;
+      s += BIAS;
+      let exponent = 7;
+      for (let expMask = 0x4000; (s & expMask) === 0 && exponent > 0; exponent--, expMask >>= 1) {}
+      const mantissa = (s >> (exponent + 3)) & 0x0f;
+      const sign = sample < 0 ? 0x80 : 0;
+      return ~(sign | (exponent << 4) | mantissa) & 0xff;
+    }
+
+    function mulawDecodeSample(mu) {
+      mu = ~mu & 0xff;
+      const sign = mu & 0x80;
+      const exponent = (mu >> 4) & 0x07;
+      const mantissa = mu & 0x0f;
+      let sample = ((mantissa << 3) + 0x84) << exponent;
+      sample -= 0x84;
+      return sign ? -sample : sample;
+    }
+
+    function floatToMulawFrames(float32, inputRate) {
+      const ratio = inputRate / TWILIO_RATE;
+      const outLen = Math.floor(float32.length / ratio);
+      const mulaw = new Uint8Array(outLen);
+      for (let i = 0; i < outLen; i++) {
+        const idx = Math.min(float32.length - 1, Math.floor(i * ratio));
+        let s = float32[idx];
+        if (s > 1) s = 1;
+        if (s < -1) s = -1;
+        mulaw[i] = mulawEncodeSample((s * 32767) | 0);
+      }
+      return mulaw;
+    }
+
+    function concatFloat32(a, b) {
+      const out = new Float32Array(a.length + b.length);
+      out.set(a, 0);
+      out.set(b, a.length);
+      return out;
+    }
+
+    function bytesToBase64(bytes) {
+      let binary = "";
+      const chunkSize = 0x8000;
+      for (let i = 0; i < bytes.length; i += chunkSize) {
+        binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunkSize));
+      }
+      return btoa(binary);
+    }
+
+    function base64ToBytes(b64) {
+      const binary = atob(b64);
+      const out = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) out[i] = binary.charCodeAt(i);
+      return out;
+    }
+
+    function sendJson(obj) {
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify(obj));
+      }
+    }
+
+    function nextSeq() {
+      seq += 1;
+      return String(seq);
+    }
+
+    function sendMediaFrame(mulawBytes) {
+      chunk += 1;
+      const timestamp = String(Math.floor((performance.now() - startedAt)));
+      sendJson({
+        event: "media",
+        sequenceNumber: nextSeq(),
+        streamSid,
+        media: {
+          track: "inbound",
+          chunk: String(chunk),
+          timestamp,
+          payload: bytesToBase64(mulawBytes),
+        },
+      });
+    }
+
+    function playMulawPayload(b64) {
+      if (!audioCtx) return;
+      const mulaw = base64ToBytes(b64);
+      const pcm = new Float32Array(mulaw.length);
+      for (let i = 0; i < mulaw.length; i++) {
+        pcm[i] = mulawDecodeSample(mulaw[i]) / 32768;
+      }
+      const buffer = audioCtx.createBuffer(1, pcm.length, TWILIO_RATE);
+      buffer.copyToChannel(pcm, 0);
+      const src = audioCtx.createBufferSource();
+      src.buffer = buffer;
+      src.connect(audioCtx.destination);
+      const now = audioCtx.currentTime;
+      if (playTime < now) playTime = now;
+      src.start(playTime);
+      playTime += buffer.duration;
+    }
+
+    async function start() {
+      if (running) return;
+      startBtn.disabled = true;
+      stopBtn.disabled = false;
+      setStatus("Connecting…", "live");
+      log("Requesting microphone…");
+
+      try {
+        mediaStream = await navigator.mediaDevices.getUserMedia({
+          audio: {
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true,
+            channelCount: 1,
+          },
+        });
+      } catch (err) {
+        setStatus("Mic permission denied", "err");
+        log("Mic error: " + err.message);
+        startBtn.disabled = false;
+        stopBtn.disabled = true;
+        return;
+      }
+
+      audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      await audioCtx.resume();
+      playTime = audioCtx.currentTime;
+      pcmCarry = new Float32Array(0);
+      seq = 0;
+      chunk = 0;
+      startedAt = performance.now();
+      callSid = "CAlocal" + Math.random().toString(36).slice(2, 12);
+      streamSid = "MZlocal" + Math.random().toString(36).slice(2, 12);
+
+      const proto = location.protocol === "https:" ? "wss:" : "ws:";
+      const wsUrl = `${proto}//${location.host}/media-stream`;
+      log("Opening " + wsUrl);
+
+      ws = new WebSocket(wsUrl);
+
+      ws.onopen = () => {
+        running = true;
+        setStatus("Live — speak after greeting", "live");
+        log("WebSocket open. callSid=" + callSid);
+        sendJson({
+          event: "connected",
+          protocol: "Call",
+          version: "1.0.0",
+        });
+        sendJson({
+          event: "start",
+          sequenceNumber: nextSeq(),
+          start: {
+            streamSid,
+            accountSid: "AClocal",
+            callSid,
+            tracks: ["inbound"],
+            mediaFormat: {
+              encoding: "audio/x-mulaw",
+              sampleRate: 8000,
+              channels: 1,
+            },
+          },
+          streamSid,
+        });
+
+        sourceNode = audioCtx.createMediaStreamSource(mediaStream);
+        processor = audioCtx.createScriptProcessor(4096, 1, 1);
+        silentGain = audioCtx.createGain();
+        silentGain.gain.value = 0;
+
+        processor.onaudioprocess = (ev) => {
+          if (!running) return;
+          const input = ev.inputBuffer.getChannelData(0);
+          pcmCarry = concatFloat32(pcmCarry, input);
+          const inputRate = audioCtx.sampleRate;
+          const neededFloat = Math.ceil(FRAME_SAMPLES * (inputRate / TWILIO_RATE));
+
+          while (pcmCarry.length >= neededFloat) {
+            const slice = pcmCarry.subarray(0, neededFloat);
+            pcmCarry = pcmCarry.slice(neededFloat);
+            const mulaw = floatToMulawFrames(slice, inputRate);
+            if (mulaw.length >= FRAME_SAMPLES) {
+              sendMediaFrame(mulaw.subarray(0, FRAME_SAMPLES));
+            } else if (mulaw.length > 0) {
+              sendMediaFrame(mulaw);
+            }
+          }
+        };
+
+        sourceNode.connect(processor);
+        processor.connect(silentGain);
+        silentGain.connect(audioCtx.destination);
+        log("Mic streaming (μ-law 8 kHz). Listen for greeting…");
+      };
+
+      ws.onmessage = (ev) => {
+        let msg;
+        try {
+          msg = JSON.parse(ev.data);
+        } catch {
+          return;
+        }
+        if (msg.event === "media" && msg.media?.payload) {
+          playMulawPayload(msg.media.payload);
+        } else if (msg.event === "clear") {
+          playTime = audioCtx ? audioCtx.currentTime : 0;
+        } else if (msg.event) {
+          log("← " + msg.event);
+        }
+      };
+
+      ws.onerror = () => {
+        setStatus("WebSocket error", "err");
+        log("WebSocket error");
+      };
+
+      ws.onclose = () => {
+        log("WebSocket closed");
+        if (running) stopSession(false);
+        else setStatus("Disconnected", null);
+      };
+    }
+
+    function stopSession(sendStop) {
+      running = false;
+      startBtn.disabled = false;
+      stopBtn.disabled = true;
+
+      if (sendStop && ws && ws.readyState === WebSocket.OPEN) {
+        sendJson({
+          event: "stop",
+          sequenceNumber: nextSeq(),
+          stop: { accountSid: "AClocal", callSid },
+          streamSid,
+        });
+        try { ws.close(); } catch (_) {}
+      }
+      ws = null;
+
+      try { processor && processor.disconnect(); } catch (_) {}
+      try { sourceNode && sourceNode.disconnect(); } catch (_) {}
+      try { silentGain && silentGain.disconnect(); } catch (_) {}
+      processor = null;
+      sourceNode = null;
+      silentGain = null;
+
+      if (mediaStream) {
+        mediaStream.getTracks().forEach((t) => t.stop());
+        mediaStream = null;
+      }
+      if (audioCtx) {
+        audioCtx.close().catch(() => {});
+        audioCtx = null;
+      }
+      setStatus("Stopped", null);
+      log("Session stopped.");
+    }
+
+    startBtn.addEventListener("click", start);
+    stopBtn.addEventListener("click", () => stopSession(true));
+    window.addEventListener("beforeunload", () => stopSession(true));
+  </script>
+</body>
+</html>

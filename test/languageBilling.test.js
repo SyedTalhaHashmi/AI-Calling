@@ -48,6 +48,28 @@ check("do you speak Spanish locks es", () => {
   assert.strictEqual(explicitLanguageSwitch("Do you speak Spanish?"), "es");
 });
 
+check("Yiddish capability ask locks yi", () => {
+  assert.strictEqual(
+    explicitLanguageSwitch(
+      "And he goes, what I know, I want to know if you can speak Yiddish."
+    ),
+    "yi"
+  );
+  assert.strictEqual(
+    explicitLanguageSwitch(
+      "But I want you should speak Yiddish for me, and when you're gonna speak Yiddish for me"
+    ),
+    "yi"
+  );
+  const session = { replyLanguage: "en" };
+  const r = updateReplyLanguage(
+    session,
+    "I want to know if you can speak Yiddish."
+  );
+  assert.strictEqual(session.replyLanguage, "yi");
+  assert.strictEqual(r.changed, true);
+});
+
 check("session: Hello after Spanish stay es", () => {
   const session = { replyLanguage: "es" };
   const r = updateReplyLanguage(session, "Hello?");

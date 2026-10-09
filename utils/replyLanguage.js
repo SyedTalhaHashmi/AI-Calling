@@ -12,6 +12,8 @@ const LANG_NAMES = {
   ur: "Urdu",
   zh: "Chinese",
   ja: "Japanese",
+  yi: "Yiddish",
+  he: "Hebrew",
 };
 
 function wordCount(text) {
@@ -31,6 +33,14 @@ function explicitLanguageSwitch(text) {
     { re: /\b(speak|talk|reply|answer|switch)\s+(in\s+)?(hindi|urdu)\b|\bin\s+(hindi|urdu)\b/, code: "hi" },
     { re: /\b(speak|talk|reply|answer|switch)\s+(in\s+)?(portuguese|portugu[eê]s)\b/, code: "pt" },
     { re: /\b(speak|talk|reply|answer|switch)\s+(in\s+)?chinese\b|\bin\s+chinese\b/, code: "zh" },
+    {
+      re: /\b(speak|talk|reply|answer|switch|continue)\s+(in\s+)?yiddish\b|\bin\s+yiddish\b|\byiddish\s+please\b|\bspeak\s+yiddish\s+for\s+me\b/,
+      code: "yi",
+    },
+    {
+      re: /\b(speak|talk|reply|answer|switch|continue)\s+(in\s+)?hebrew\b|\bin\s+hebrew\b|\bhebrew\s+please\b/,
+      code: "he",
+    },
     { re: /\bdo you speak spanish\b/, code: "es" },
     { re: /\bdo you speak (english|french|hindi|chinese)\b/, code: null }, // question only — handled below
   ];
@@ -44,6 +54,15 @@ function explicitLanguageSwitch(text) {
   if (/\bdo you speak (english|english as well)\b/.test(t)) return "en";
   if (/\bdo you speak chinese\b/.test(t)) return "zh";
   if (/\bdo you speak portuguese\b/.test(t)) return "pt";
+  // Capability ask locks the language so the next turn can continue in it
+  if (
+    /\b(do you|can you)\s+speak\s+yiddish\b/.test(t) ||
+    /\bif you can speak\s+yiddish\b/.test(t) ||
+    /\bwant to know if you can speak\s+yiddish\b/.test(t)
+  ) {
+    return "yi";
+  }
+  if (/\b(do you|can you)\s+speak\s+hebrew\b/.test(t)) return "he";
   return null;
 }
 
@@ -59,6 +78,8 @@ function detectLanguage(text) {
   if (/[\u0600-\u06FF]/.test(raw)) return "ur";
   if (/[\u4e00-\u9fff]/.test(raw)) return "zh";
   if (/[\u3040-\u30ff]/.test(raw)) return "ja";
+  // Hebrew alphabet (also used for Yiddish text) — treat as Hebrew unless session already locked Yiddish
+  if (/[\u0590-\u05FF]/.test(raw)) return "he";
 
   const t = raw.toLowerCase();
   const words = wordCount(raw);
@@ -138,6 +159,20 @@ function updateReplyLanguage(session, userText) {
 function languageInstruction(session) {
   const code = session?.replyLanguage || "en";
   const name = languageLabel(code);
+  if (code === "yi") {
+    return (
+      `Reply ONLY in Yiddish for this call (spoken Yiddish the caller can hear). ` +
+      `Do not say you can only speak English. Do not refuse Yiddish. ` +
+      `Switch away only if the caller clearly asks for another language.`
+    );
+  }
+  if (code === "he") {
+    return (
+      `Reply ONLY in Hebrew for this call. ` +
+      `Do not say you can only speak English. ` +
+      `Switch away only if the caller clearly asks for another language.`
+    );
+  }
   return (
     `Reply ONLY in ${name} for this call. ` +
     `Do not switch language unless the caller clearly asks to speak another language. ` +

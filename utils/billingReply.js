@@ -6,7 +6,7 @@ function isBillingQuestion(text) {
   const t = String(text || "").toLowerCase();
   // Avoid stealing "how long is the flight" — require plan/free/trial/cost cues
   const hasPlanCue =
-    /\b(free|trial|subscribe|subscription|minutes?|unlimited|no charge|pricing|plan|pay|cost)\b/i.test(
+    /\b(free|trial|subscribe|subscription|minutes?|unlimited|no charge|pricing|plan|pay|cost|limit|usage)\b/i.test(
       t
     ) || /\b(gratis|prueba|minutos|ilimitado)\b/i.test(t);
   const hasTimeAsk =
@@ -16,6 +16,23 @@ function isBillingQuestion(text) {
   if (hasTimeAsk && hasPlanCue) return true;
   if (
     /\b(free trial|talk for free|for free|without paying|no charge|unlimited)\b/i.test(t)
+  ) {
+    return true;
+  }
+  if (
+    /\b((do|does|did|have|has|will|must|need) i (have to |need to )?pay|have to pay|need to pay|is (this|it) free|do i (have|need) to pay)\b/i.test(
+      t
+    )
+  ) {
+    return true;
+  }
+  // Monthly/usage limits, minutes caps — never let chat invent "unlimited"
+  if (
+    /\b((monthly|daily|weekly|usage|talk|call|minute|time)\s+limit|limit\s+to\s+speak|how many minutes|minutes (per|a) month)\b/i.test(
+      t
+    ) ||
+    /\bdo i have a (monthly|daily|weekly|usage)?\s*limit\b/i.test(t) ||
+    /\b(is there|any) (a )?(monthly|daily|usage) limit\b/i.test(t)
   ) {
     return true;
   }

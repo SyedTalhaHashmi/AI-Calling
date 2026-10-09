@@ -47,19 +47,81 @@ function buildRealtimeInstructions(session) {
   ].join("\n");
 }
 
-/** Realtime input: denoise before VAD, then stricter speech onset so noise rarely triggers barge-in. */
+/** Realtime input: denoise, then semantic turn detection (ChatGPT-like; waits on fillers / incomplete thoughts). */
 const REALTIME_INPUT_AUDIO = {
   noise_reduction: { type: "far_field" },
   transcription: { model: "whisper-1" },
   turn_detection: {
-    type: "server_vad",
-    threshold: 0.72,
-    prefix_padding_ms: 300,
-    silence_duration_ms: 600,
+    type: "semantic_vad",
+    eagerness: "medium",
     interrupt_response: true,
     create_response: false,
   },
 };
+
+function responseIdFromEvent(ev) {
+  return ev?.response?.id || ev?.response_id || null;
+}
+
+/**
+ * User is holding the floor (thinking / asking for time) — do not reply yet.
+ * Semantic VAD correctly ends these as complete sentences; we must not jump in.
+ * Never defer when the same utterance also contains a real question/request.
+ */
+function shouldDeferUserTurn(text) {
+  const raw = String(text || "").trim();
+  const t = raw
+    .toLowerCase()
+    .replace(/[.!?…]+$/g, "")
+    .replace(/\s+/g, " ");
+  if (!t) return true;
+
+  // Bare ASR crumbs / fillers / backchannels — not a real turn
+  if (/^(you|uh+|u[mh]+|ah+|hmm+|mm+|mhm|eh+)$/i.test(t)) return true;
+  if (
+    /^(yeah|yep|yup|yes|no|nope|ok|okay|right|sure|great|cool|thanks|thank you)([,\s]+\1)*$/i.test(
+      t
+    )
+  ) {
+    return true;
+  }
+  // "great, great, great" / "yeah yeah"
+  if (/^(?:(yeah|yes|ok|okay|great|cool|sure)[\s,]+)+(yeah|yes|ok|okay|great|cool|sure)$/i.test(t)) {
+    return true;
+  }
+
+  // Hold + real ask in one utterance → answer the ask (do not defer)
+  // Note: do not treat "give me a second/moment" as an ask
+  const hasRealAsk =
+    /\?/.test(raw) ||
+    /\b(what(?:'s| is| are)|how (?:can|do|to|about)|can you|could you|will you|tell me|help me|weather (?:in|for)|plan my)\b/i.test(
+      t
+    ) ||
+    /\bgive me (?:the|an)\b/i.test(t) ||
+    /\bgive me a (?!second|moment|minute)\w+/i.test(t);
+  if (hasRealAsk) return false;
+
+  // Hold-only / thinking-only (full utterance)
+  if (
+    /^(?:(?:well|so|okay|ok|actually)[, ]+)?(?:let me think(?:\s+(?:for a (?:second|moment|minute)|about it))?|give me a (?:second|moment|minute)(?:\s+to think)?|just a (?:second|moment|minute)|one (?:second|moment|minute)|hold on|hang on|let me finish|let me explain|i need a (?:second|moment|minute))(?:\s+(?:for a (?:second|moment|minute)|a (?:second|moment|minute)|okay|ok|please))?$/i.test(
+      t
+    )
+  ) {
+    return true;
+  }
+  // "wait" / "wait wait wait" only
+  if (/^(?:wait\s*,?\s*)+wait$/i.test(t) || /^wait$/i.test(t)) return true;
+
+  // Preamble only — they signaled a question is coming
+  if (
+    /^(i wanted to ask you something|i (just )?have a question|i need to explain something( important)?|let me ask you something|i want to ask (you )?something)(?:\s*,?\s*let me think(?:\s+for a (?:second|moment|minute))?)?$/i.test(
+      t
+    )
+  ) {
+    return true;
+  }
+  return false;
+}
 
 const WEATHER_TOOL = {
   type: "function",
@@ -130,7 +192,56 @@ function createMediaStreamHandler({
     let transcriptLines = [];
     let lastUserTranscript = "";
     let responseInProgress = false;
+    /** OpenAI response id currently allowed to send outbound audio to Twilio. */
+    let activeResponseId = null;
+    /** Bumped on each intentional create / interrupt so stale response.created cannot bind. */
+    let responseGeneration = 0;
+    let expectedGeneration = 0;
+    /**
+     * Number of in-flight creates that were interrupted before response.created.
+     * Each matching created event is cancelled (works even if metadata is stripped).
+     */
+    let pendingCreatedCancels = 0;
     let timeLimitTimer = null;
+
+    /** Call immediately before each response.create; returns generation for metadata. */
+    function markResponseCreateSent() {
+      responseGeneration += 1;
+      expectedGeneration = responseGeneration;
+      responseInProgress = true;
+      return expectedGeneration;
+    }
+
+    function createResponsePayload(responseFields) {
+      const gen = markResponseCreateSent();
+      return {
+        type: "response.create",
+        response: {
+          ...responseFields,
+          metadata: { ...(responseFields.metadata || {}), client_gen: String(gen) },
+        },
+      };
+    }
+
+    /** Cancel in-flight agent audio only — never stop inbound user audio append. */
+    function interruptAgentPlayback() {
+      if (!responseInProgress && !activeResponseId && pendingCreatedCancels === 0) {
+        return;
+      }
+      const idToCancel = activeResponseId;
+      const hadPendingCreate = responseInProgress && !idToCancel;
+      responseGeneration += 1;
+      expectedGeneration = responseGeneration;
+      activeResponseId = null;
+      responseInProgress = false;
+      if (hadPendingCreate) pendingCreatedCancels += 1;
+      if (idToCancel && openaiWs && openaiWs.readyState === WebSocket.OPEN) {
+        openaiWs.send(JSON.stringify({ type: "response.cancel" }));
+      }
+      if (twilioWs && twilioWs.readyState === WebSocket.OPEN && streamSid) {
+        twilioWs.send(JSON.stringify({ event: "clear", streamSid }));
+      }
+    }
 
     const cleanup = () => {
       if (timeLimitTimer) {
@@ -185,10 +296,12 @@ function createMediaStreamHandler({
                 if (billRef) billRef.callEnding = true;
                 if (openaiWs && openaiWs.readyState === WebSocket.OPEN) {
                   openaiWs.send(
-                    JSON.stringify({
-                      type: "response.create",
-                      response: { instructions: TIME_UP_INSTRUCTION, tools: [] },
-                    })
+                    JSON.stringify(
+                      createResponsePayload({
+                        instructions: TIME_UP_INSTRUCTION,
+                        tools: [],
+                      })
+                    )
                   );
                 }
                 const pauseMs = openaiWs?.readyState === WebSocket.OPEN ? 9000 : 800;
@@ -237,10 +350,12 @@ function createMediaStreamHandler({
           );
           // Say greeting once, then stop and listen
           openaiWs.send(
-            JSON.stringify({
-              type: "response.create",
-              response: { instructions: `Say exactly: ${GREETING}`, tools: [] },
-            })
+            JSON.stringify(
+              createResponsePayload({
+                instructions: `Say exactly: ${GREETING}`,
+                tools: [],
+              })
+            )
           );
         });
 
@@ -253,6 +368,13 @@ function createMediaStreamHandler({
           }
 
           if (ev.type === "error") {
+            if (ev.error?.code === "response_cancel_not_active") {
+              logger.info(
+                { callSid, code: ev.error.code },
+                "Ignore benign response.cancel (no active response)"
+              );
+              return;
+            }
             logger.error({ callSid, error: ev.error }, "OpenAI Realtime error");
             return;
           }
@@ -286,12 +408,10 @@ function createMediaStreamHandler({
                 : `Say exactly: ${reply}`;
             // No tools on fast-path replies — prevents double weather/hotel answers
             openaiWs.send(
-              JSON.stringify({
-                type: "response.create",
-                response: { instructions: instruction, tools: [] },
-              })
+              JSON.stringify(
+                createResponsePayload({ instructions: instruction, tools: [] })
+              )
             );
-            responseInProgress = true;
             callStore.addAssistantMessage(callSid, reply);
             transcriptLines.push(`AI: ${reply}`);
             const aiReplyLog = reply.length > 100 ? reply.slice(0, 100) + "…" : reply;
@@ -314,9 +434,11 @@ function createMediaStreamHandler({
               return;
             }
 
-            if (responseInProgress && openaiWs?.readyState === WebSocket.OPEN) {
-              openaiWs.send(JSON.stringify({ type: "response.cancel" }));
-              responseInProgress = false;
+            interruptAgentPlayback();
+
+            if (shouldDeferUserTurn(trimmed)) {
+              logger.info({ callSid, transcript: trimmed }, "Skip turn: user holding floor");
+              return;
             }
 
             const langUpdate = updateReplyLanguage(sessionRef, trimmed);
@@ -573,18 +695,26 @@ function createMediaStreamHandler({
               return;
             }
             if (openaiWs?.readyState === WebSocket.OPEN) {
+              if (responseInProgress) {
+                logger.info({ callSid }, "Skip general reply: response already in progress");
+                return;
+              }
               const langName = languageLabel(
                 callStore.get(callSid)?.replyLanguage || "en"
               );
               openaiWs.send(
-                JSON.stringify({
-                  type: "response.create",
-                  response: {
-                    instructions: `Reply in ${langName} only. Keep it to 15–20 words.`,
-                  },
-                })
+                JSON.stringify(
+                  createResponsePayload({
+                    instructions: `Reply in ${langName} only. About 15–25 words. Answer from general knowledge when you can (like ChatGPT). If you cannot complete an action (browse, open links, transfer), still help with a clear website or search tip plus what you can do next. Answer only their latest request.`,
+                    tools: [],
+                  })
+                )
               );
             }
+          }
+
+          if (ev.type === "input_audio_buffer.speech_started") {
+            interruptAgentPlayback();
           }
 
           if (ev.type === "conversation.item.input_audio_transcription.completed" && ev.transcript) {
@@ -592,24 +722,129 @@ function createMediaStreamHandler({
           }
 
           if (ev.type === "response.created") {
-            responseInProgress = true;
+            const createdId = responseIdFromEvent(ev);
+            const createdGen = Number(ev.response?.metadata?.client_gen);
+            const genMismatch =
+              Number.isFinite(createdGen) && createdGen !== expectedGeneration;
+            const cancelStale =
+              pendingCreatedCancels > 0 || genMismatch;
+            if (cancelStale) {
+              if (pendingCreatedCancels > 0) pendingCreatedCancels -= 1;
+              if (createdId && openaiWs?.readyState === WebSocket.OPEN) {
+                openaiWs.send(JSON.stringify({ type: "response.cancel" }));
+              }
+              if (twilioWs?.readyState === WebSocket.OPEN && streamSid) {
+                twilioWs.send(JSON.stringify({ event: "clear", streamSid }));
+              }
+            } else if (responseInProgress && createdId) {
+              activeResponseId = createdId;
+            }
           }
-          if (ev.type === "response.done" || ev.type === "response.cancelled" || ev.type === "response.failed") {
-            responseInProgress = false;
+
+          if (
+            ev.type === "response.done" ||
+            ev.type === "response.cancelled" ||
+            ev.type === "response.failed"
+          ) {
+            const endedId = responseIdFromEvent(ev);
+            let isActiveCompletion = false;
+            if (activeResponseId != null) {
+              if (endedId === activeResponseId) {
+                isActiveCompletion = true;
+                activeResponseId = null;
+                responseInProgress = false;
+              }
+              // else: stale terminal event for an older response — do not reset newer state
+            } else if (!endedId && responseInProgress) {
+              // Create sent but no id yet; terminal without id — clear busy to avoid stuck lock
+              responseInProgress = false;
+            }
+            // else: activeResponseId null with endedId set → stale after interrupt; ignore
+
+            if (
+              isActiveCompletion &&
+              ev.type === "response.done" &&
+              (weatherService?.enabled || openMeteoService?.enabled)
+            ) {
+              const out = ev.response?.output?.[0];
+              if (out?.type === "function_call" && out.name === "get_weather" && out.call_id) {
+                let args = {};
+                try {
+                  args = JSON.parse(out.arguments || "{}");
+                } catch (_) {}
+                const sessionRef = callStore.get(callSid);
+                let city = args.city || "unknown";
+                let country =
+                  normalizeCountryCode(args.country) ||
+                  sessionRef?.placeHint?.country ||
+                  undefined;
+
+                // Country-only tool call
+                const cityAsCountry = normalizeCountryCode(city);
+                if (cityAsCountry) {
+                  country = country || cityAsCountry;
+                  city = defaultCityForCountry(cityAsCountry) || city;
+                }
+                if ((!city || /^unknown$/i.test(city)) && country) {
+                  city = defaultCityForCountry(country) || city;
+                }
+
+                (async () => {
+                  try {
+                    const result = await fetchWeatherForPlace(
+                      { city, country },
+                      openMeteoService,
+                      weatherService
+                    );
+                    const output = JSON.stringify(result);
+                    openaiWs.send(
+                      JSON.stringify({
+                        type: "conversation.item.create",
+                        item: {
+                          type: "function_call_output",
+                          call_id: out.call_id,
+                          output,
+                        },
+                      })
+                    );
+                    openaiWs.send(JSON.stringify(createResponsePayload({})));
+                    logger.info({ callSid, city, country, result }, "Weather tool result");
+                  } catch (err) {
+                    logger.error({ callSid, err: err.message }, "Weather tool failed");
+                    openaiWs.send(
+                      JSON.stringify({
+                        type: "conversation.item.create",
+                        item: {
+                          type: "function_call_output",
+                          call_id: out.call_id,
+                          output: JSON.stringify({ error: "Could not get weather." }),
+                        },
+                      })
+                    );
+                    openaiWs.send(JSON.stringify(createResponsePayload({})));
+                  }
+                })();
+              }
+            }
           }
+
           if (ev.type === "response.output_audio.delta" && ev.delta) {
-            responseInProgress = true;
-            try {
-              const mulawBase64 = openAIToTwilio(ev.delta);
-              twilioWs.send(
-                JSON.stringify({
-                  event: "media",
-                  streamSid,
-                  media: { payload: mulawBase64 },
-                })
-              );
-            } catch (err) {
-              logger.warn({ callSid, err: err.message }, "Audio convert failed");
+            if (!activeResponseId || ev.response_id !== activeResponseId) {
+              // drop stale / cancelled response audio
+            } else {
+              responseInProgress = true;
+              try {
+                const mulawBase64 = openAIToTwilio(ev.delta);
+                twilioWs.send(
+                  JSON.stringify({
+                    event: "media",
+                    streamSid,
+                    media: { payload: mulawBase64 },
+                  })
+                );
+              } catch (err) {
+                logger.warn({ callSid, err: err.message }, "Audio convert failed");
+              }
             }
           }
 
@@ -618,71 +853,6 @@ function createMediaStreamHandler({
             callStore.addAssistantMessage(callSid, ev.transcript);
             const aiLog = ev.transcript.length > 100 ? ev.transcript.slice(0, 100) + "…" : ev.transcript;
             logger.info({ callSid, reply: ev.transcript, role: "assistant" }, `AI: ${aiLog}`);
-          }
-
-          if (
-            ev.type === "response.done" &&
-            (weatherService?.enabled || openMeteoService?.enabled)
-          ) {
-            const out = ev.response?.output?.[0];
-            if (out?.type === "function_call" && out.name === "get_weather" && out.call_id) {
-              let args = {};
-              try {
-                args = JSON.parse(out.arguments || "{}");
-              } catch (_) {}
-              const sessionRef = callStore.get(callSid);
-              let city = args.city || "unknown";
-              let country =
-                normalizeCountryCode(args.country) ||
-                sessionRef?.placeHint?.country ||
-                undefined;
-
-              // Country-only tool call
-              const cityAsCountry = normalizeCountryCode(city);
-              if (cityAsCountry) {
-                country = country || cityAsCountry;
-                city = defaultCityForCountry(cityAsCountry) || city;
-              }
-              if ((!city || /^unknown$/i.test(city)) && country) {
-                city = defaultCityForCountry(country) || city;
-              }
-
-              (async () => {
-                try {
-                  const result = await fetchWeatherForPlace(
-                    { city, country },
-                    openMeteoService,
-                    weatherService
-                  );
-                  const output = JSON.stringify(result);
-                  openaiWs.send(
-                    JSON.stringify({
-                      type: "conversation.item.create",
-                      item: {
-                        type: "function_call_output",
-                        call_id: out.call_id,
-                        output,
-                      },
-                    })
-                  );
-                  openaiWs.send(JSON.stringify({ type: "response.create" }));
-                  logger.info({ callSid, city, country, result }, "Weather tool result");
-                } catch (err) {
-                  logger.error({ callSid, err: err.message }, "Weather tool failed");
-                  openaiWs.send(
-                    JSON.stringify({
-                      type: "conversation.item.create",
-                      item: {
-                        type: "function_call_output",
-                        call_id: out.call_id,
-                        output: JSON.stringify({ error: "Could not get weather." }),
-                      },
-                    })
-                  );
-                  openaiWs.send(JSON.stringify({ type: "response.create" }));
-                }
-              })();
-            }
           }
         });
 

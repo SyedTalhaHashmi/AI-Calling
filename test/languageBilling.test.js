@@ -74,6 +74,11 @@ check("session: switch to English on ask", () => {
 check("billing question detected", () => {
   assert.ok(isBillingQuestion("How long could I talk to you for free?"));
   assert.ok(isBillingQuestion("is there a free trial?"));
+  assert.ok(isBillingQuestion("do I have to pay for this"));
+  assert.ok(isBillingQuestion("Do I have to pay for this?"));
+  assert.ok(isBillingQuestion("Do I have a monthly limit?"));
+  assert.ok(isBillingQuestion("Do I have a monthly limit to speak to?"));
+  assert.ok(!isBillingQuestion("I am talking about Buddy Call AI."));
 });
 
 check("trial billing reply uses seconds", () => {

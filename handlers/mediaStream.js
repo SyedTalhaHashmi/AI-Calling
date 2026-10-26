@@ -29,6 +29,7 @@ const {
   billingReply,
   billingInstruction,
 } = require("../utils/billingReply");
+const { createTurnMetrics } = require("../utils/turnMetrics");
 
 const OPENAI_REALTIME_URL = "wss://api.openai.com/v1/realtime?model=gpt-realtime";
 
@@ -184,8 +185,11 @@ function createMediaStreamHandler({
   flightsService,
   stocksService,
   twilioClient,
+  latencyMetricsEnabled = true,
 }) {
   return function handleMediaStream(twilioWs, req) {
+    /** Logging-only latency metrics; never affects call flow. */
+    const metrics = createTurnMetrics({ logger, enabled: latencyMetricsEnabled });
     let callSid = null;
     let streamSid = null;
     let openaiWs = null;
@@ -212,8 +216,9 @@ function createMediaStreamHandler({
       return expectedGeneration;
     }
 
-    function createResponsePayload(responseFields) {
+    function createResponsePayload(responseFields, metricsTurnId) {
       const gen = markResponseCreateSent();
+      metrics.onResponseCreateSent(metricsTurnId, gen);
       return {
         type: "response.create",
         response: {
@@ -244,6 +249,7 @@ function createMediaStreamHandler({
     }
 
     const cleanup = () => {
+      metrics.flush();
       if (timeLimitTimer) {
         clearInterval(timeLimitTimer);
         timeLimitTimer = null;
@@ -269,6 +275,7 @@ function createMediaStreamHandler({
       if (msg.event === "start") {
         callSid = msg.start?.callSid || msg.callSid;
         streamSid = msg.start?.streamSid || msg.streamSid;
+        metrics.setCallSid(callSid);
         callStore.getOrCreate(callSid);
         callStore.addAssistantMessage(callSid, GREETING);
         transcriptLines.push(`AI: ${GREETING}`);
@@ -297,10 +304,13 @@ function createMediaStreamHandler({
                 if (openaiWs && openaiWs.readyState === WebSocket.OPEN) {
                   openaiWs.send(
                     JSON.stringify(
-                      createResponsePayload({
-                        instructions: TIME_UP_INSTRUCTION,
-                        tools: [],
-                      })
+                      createResponsePayload(
+                        {
+                          instructions: TIME_UP_INSTRUCTION,
+                          tools: [],
+                        },
+                        metrics.beginSystemTurn("time_up")
+                      )
                     )
                   );
                 }
@@ -351,10 +361,13 @@ function createMediaStreamHandler({
           // Say greeting once, then stop and listen
           openaiWs.send(
             JSON.stringify(
-              createResponsePayload({
-                instructions: `Say exactly: ${GREETING}`,
-                tools: [],
-              })
+              createResponsePayload(
+                {
+                  instructions: `Say exactly: ${GREETING}`,
+                  tools: [],
+                },
+                metrics.beginSystemTurn("greeting")
+              )
             )
           );
         });
@@ -395,9 +408,10 @@ function createMediaStreamHandler({
             );
           }
 
-          function sendReply(reply, opts = {}) {
+          function sendReplyBase(reply, opts = {}) {
             if (responseInProgress) {
               logger.info({ callSid }, "Skip fast-path: response already in progress");
+              metrics.finishWithoutReply(opts.turnId, "skipped_busy");
               return;
             }
             const sess = callStore.get(callSid);
@@ -409,7 +423,7 @@ function createMediaStreamHandler({
             // No tools on fast-path replies — prevents double weather/hotel answers
             openaiWs.send(
               JSON.stringify(
-                createResponsePayload({ instructions: instruction, tools: [] })
+                createResponsePayload({ instructions: instruction, tools: [] }, opts.turnId)
               )
             );
             callStore.addAssistantMessage(callSid, reply);
@@ -418,12 +432,22 @@ function createMediaStreamHandler({
             logger.info({ callSid, reply, role: "assistant" }, `AI: ${aiReplyLog}`);
           }
 
-          function handleUserTranscript(text) {
+          function handleUserTranscript(text, turnId) {
+            // Metrics helpers bound to this turn (pass results through unchanged)
+            const sendReply = (reply, opts = {}) => sendReplyBase(reply, { ...opts, turnId });
+            const timed = (label, fn) => metrics.time(turnId, label, fn);
+
             const trimmed = (text != null && text !== "" ? String(text).trim() : "");
-            if (!trimmed) return;
+            if (!trimmed) {
+              metrics.finishWithoutReply(turnId, "empty");
+              return;
+            }
             const userLog = trimmed.length > 100 ? trimmed.slice(0, 100) + "…" : trimmed;
             logger.info({ callSid, transcript: trimmed, role: "user" }, `USER: ${userLog}`);
-            if (trimmed === lastUserTranscript) return;
+            if (trimmed === lastUserTranscript) {
+              metrics.finishWithoutReply(turnId, "duplicate");
+              return;
+            }
             lastUserTranscript = trimmed;
             transcriptLines.push(`Caller: ${trimmed}`);
             callStore.addUserMessage(callSid, trimmed);
@@ -431,6 +455,7 @@ function createMediaStreamHandler({
             const sessionRef = callStore.get(callSid);
             if (sessionRef?.callEnding) {
               logger.info({ callSid }, "Skip turn: call ending (time limit)");
+              metrics.finishWithoutReply(turnId, "call_ending");
               return;
             }
 
@@ -438,6 +463,8 @@ function createMediaStreamHandler({
 
             if (shouldDeferUserTurn(trimmed)) {
               logger.info({ callSid, transcript: trimmed }, "Skip turn: user holding floor");
+              metrics.setRoute(turnId, "deferred");
+              metrics.finishWithoutReply(turnId, "deferred");
               return;
             }
 
@@ -452,6 +479,7 @@ function createMediaStreamHandler({
 
             // Honest trial / plan answers — never invent unlimited free time
             if (isBillingQuestion(trimmed)) {
+              metrics.setRoute(turnId, "billing");
               const fact = billingReply(sessionRef);
               sendReply(fact, { multilingual: true });
               return;
@@ -459,6 +487,7 @@ function createMediaStreamHandler({
 
             const intent = resolveIntent(trimmed);
             logger.info({ callSid, intent }, "Intent resolved");
+            metrics.setRoute(turnId, "fast_path", intent);
 
             // Weather-only place memory — do not leak Colombia hint onto hotel/Miami asks
             if (intent === "weather") {
@@ -483,10 +512,8 @@ function createMediaStreamHandler({
                 try {
                   const facts = [];
                   for (const place of places) {
-                    const result = await fetchWeatherForPlace(
-                      place,
-                      openMeteoService,
-                      weatherService
+                    const result = await timed("weather", () =>
+                      fetchWeatherForPlace(place, openMeteoService, weatherService)
                     );
                     facts.push(formatWeatherFact(result));
                     logger.info(
@@ -516,7 +543,9 @@ function createMediaStreamHandler({
               const tz = timeService.resolveTimezone(trimmed);
               (async () => {
                 if (tz && worldTimeService?.enabled) {
-                  const r = await worldTimeService.getTimeByTimezone(tz);
+                  const r = await timed("world_time", () =>
+                    worldTimeService.getTimeByTimezone(tz)
+                  );
                   if (!r.error && r.datetime) {
                     sendReply(`It is ${new Date(r.datetime).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true })} in ${tz.replace(/_/g, " ")}.`, { multilingual: true });
                     return;
@@ -531,7 +560,7 @@ function createMediaStreamHandler({
             if (intent === "news" && newsService?.enabled) {
               const topic = extractNewsQuery(trimmed);
               (async () => {
-                const result = await newsService.topHeadlines(topic);
+                const result = await timed("news", () => newsService.topHeadlines(topic));
                 const fact = result.error
                   ? result.error
                   : `Top updates: ${result.articles.map((a) => `${a.title} from ${a.source}`).join(". ")}`;
@@ -545,7 +574,7 @@ function createMediaStreamHandler({
               const base = iso.base || spoken.base;
               const quote = iso.quote || spoken.quote;
               (async () => {
-                const result = await fxService.getRate(base, quote);
+                const result = await timed("fx", () => fxService.getRate(base, quote));
                 const fact = result.error
                   ? result.error
                   : `One ${result.base} equals ${result.rate.toFixed(4)} ${result.quote}.`;
@@ -555,7 +584,9 @@ function createMediaStreamHandler({
             }
             if (intent === "local_service" && placesService?.enabled) {
               (async () => {
-                const result = await placesService.searchText(trimmed.slice(0, 200));
+                const result = await timed("places_text", () =>
+                  placesService.searchText(trimmed.slice(0, 200))
+                );
                 const fact = result.error
                   ? result.error
                   : `Nearby options: ${result.places.map((p) => `${p.name}${p.address ? ", " + p.address : ""}`).join(". ")}`;
@@ -566,7 +597,9 @@ function createMediaStreamHandler({
             if (intent === "hotel" && placesService?.enabled) {
               const location = extractLocation(trimmed);
               (async () => {
-                const result = await placesService.searchHotels(location);
+                const result = await timed("places_hotels", () =>
+                  placesService.searchHotels(location)
+                );
                 const fact = result.error
                   ? result.error
                   : `Popular hotels: ${result.places.map((p) => `${p.name}, rated ${p.rating || "N A"}`).join(". ")}`;
@@ -577,7 +610,9 @@ function createMediaStreamHandler({
             if (intent === "food" && placesService?.enabled) {
               const location = extractLocation(trimmed);
               (async () => {
-                const result = await placesService.searchFood(location);
+                const result = await timed("places_food", () =>
+                  placesService.searchFood(location)
+                );
                 const fact = result.error
                   ? result.error
                   : `Popular food places: ${result.places.map((p) => `${p.name}, rated ${p.rating || "N A"}`).join(". ")}`;
@@ -604,7 +639,9 @@ function createMediaStreamHandler({
                 return;
               }
               (async () => {
-                const result = await travelService.cheapestRoute(origin, destination);
+                const result = await timed("travel_fare", () =>
+                  travelService.cheapestRoute(origin, destination)
+                );
                 const fact = result.error
                   ? result.error
                   : `Cheapest recent fare from ${result.origin} to ${result.destination} is about ${result.price} ${result.currency}.`;
@@ -616,7 +653,9 @@ function createMediaStreamHandler({
               const sportKey = sportsService.detectSport(trimmed);
               (async () => {
                 try {
-                  const result = await sportsService.getLiveScores(sportKey);
+                  const result = await timed("sports", () =>
+                    sportsService.getLiveScores(sportKey)
+                  );
                   const fact = result.error
                     ? result.error
                     : result.message
@@ -635,7 +674,9 @@ function createMediaStreamHandler({
               const flightIata = extractFlightNumber(trimmed);
               (async () => {
                 try {
-                  const result = await flightsService.getFlightStatus(flightIata || "");
+                  const result = await timed("flight_status", () =>
+                    flightsService.getFlightStatus(flightIata || "")
+                  );
                   const fact = result.error ? result.error : result.message;
                   logger.info({ callSid, flightIata, fact }, "Flight fast path");
                   sendReply(fact, { multilingual: !result.error });
@@ -649,7 +690,9 @@ function createMediaStreamHandler({
             if (intent === "crypto" && stocksService?.enabled) {
               (async () => {
                 try {
-                  const result = await stocksService.getCryptoQuote(trimmed);
+                  const result = await timed("crypto", () =>
+                    stocksService.getCryptoQuote(trimmed)
+                  );
                   const fact = result.error ? result.error : result.message;
                   logger.info({ callSid, fact }, "Crypto fast path");
                   sendReply(fact, { multilingual: !result.error });
@@ -666,7 +709,7 @@ function createMediaStreamHandler({
             if (intent === "rates" && stocksService?.enabled) {
               (async () => {
                 try {
-                  const result = await stocksService.getUsInterestRate();
+                  const result = await timed("rates", () => stocksService.getUsInterestRate());
                   const fact = result.error ? result.error : result.message;
                   logger.info({ callSid, fact }, "Rates fast path");
                   sendReply(fact, { multilingual: !result.error });
@@ -683,7 +726,7 @@ function createMediaStreamHandler({
             if (intent === "stocks" && stocksService?.enabled) {
               (async () => {
                 try {
-                  const result = await stocksService.getQuote(trimmed);
+                  const result = await timed("stocks", () => stocksService.getQuote(trimmed));
                   const fact = result.error ? result.error : result.message;
                   logger.info({ callSid, fact }, "Stocks fast path");
                   sendReply(fact, { multilingual: !result.error });
@@ -694,9 +737,11 @@ function createMediaStreamHandler({
               })();
               return;
             }
+            metrics.setRoute(turnId, "chat");
             if (openaiWs?.readyState === WebSocket.OPEN) {
               if (responseInProgress) {
                 logger.info({ callSid }, "Skip general reply: response already in progress");
+                metrics.finishWithoutReply(turnId, "skipped_busy");
                 return;
               }
               const langName = languageLabel(
@@ -704,25 +749,40 @@ function createMediaStreamHandler({
               );
               openaiWs.send(
                 JSON.stringify(
-                  createResponsePayload({
-                    instructions: `Reply in ${langName} only. About 15–25 words. Answer from general knowledge when you can (like ChatGPT). If you cannot complete an action (browse, open links, transfer), still help with a clear website or search tip plus what you can do next. Answer only their latest request.`,
-                    tools: [],
-                  })
+                  createResponsePayload(
+                    {
+                      instructions: `Reply in ${langName} only. About 15–25 words. Answer from general knowledge when you can (like ChatGPT). If you cannot complete an action (browse, open links, transfer), still help with a clear website or search tip plus what you can do next. Answer only their latest request.`,
+                      tools: [],
+                    },
+                    turnId
+                  )
                 )
               );
             }
           }
 
           if (ev.type === "input_audio_buffer.speech_started") {
+            metrics.onSpeechStarted(ev.item_id);
             interruptAgentPlayback();
           }
 
+          if (ev.type === "input_audio_buffer.speech_stopped") {
+            metrics.onSpeechStopped(ev.item_id);
+          }
+
+          if (ev.type === "input_audio_buffer.committed") {
+            metrics.onCommitted(ev.item_id);
+          }
+
           if (ev.type === "conversation.item.input_audio_transcription.completed" && ev.transcript) {
-            handleUserTranscript(ev.transcript);
+            const turnId = ev.item_id || `noitem:${Date.now()}`;
+            metrics.onTranscript(turnId, ev.transcript);
+            handleUserTranscript(ev.transcript, turnId);
           }
 
           if (ev.type === "response.created") {
             const createdId = responseIdFromEvent(ev);
+            metrics.onResponseCreated(createdId, ev.response?.metadata?.client_gen);
             const createdGen = Number(ev.response?.metadata?.client_gen);
             const genMismatch =
               Number.isFinite(createdGen) && createdGen !== expectedGeneration;
@@ -747,6 +807,16 @@ function createMediaStreamHandler({
             ev.type === "response.failed"
           ) {
             const endedId = responseIdFromEvent(ev);
+            const endedTurnId = metrics.turnForResponse(endedId);
+            metrics.onResponseEnded(
+              endedId,
+              ev.type === "response.done" ? ev.response?.status || "done" : ev.type.slice(9),
+              {
+                functionCall: (ev.response?.output || []).some(
+                  (o) => o?.type === "function_call"
+                ),
+              }
+            );
             let isActiveCompletion = false;
             if (activeResponseId != null) {
               if (endedId === activeResponseId) {
@@ -791,10 +861,8 @@ function createMediaStreamHandler({
 
                 (async () => {
                   try {
-                    const result = await fetchWeatherForPlace(
-                      { city, country },
-                      openMeteoService,
-                      weatherService
+                    const result = await metrics.time(endedTurnId, "weather_tool", () =>
+                      fetchWeatherForPlace({ city, country }, openMeteoService, weatherService)
                     );
                     const output = JSON.stringify(result);
                     openaiWs.send(
@@ -807,7 +875,7 @@ function createMediaStreamHandler({
                         },
                       })
                     );
-                    openaiWs.send(JSON.stringify(createResponsePayload({})));
+                    openaiWs.send(JSON.stringify(createResponsePayload({}, endedTurnId)));
                     logger.info({ callSid, city, country, result }, "Weather tool result");
                   } catch (err) {
                     logger.error({ callSid, err: err.message }, "Weather tool failed");
@@ -821,7 +889,7 @@ function createMediaStreamHandler({
                         },
                       })
                     );
-                    openaiWs.send(JSON.stringify(createResponsePayload({})));
+                    openaiWs.send(JSON.stringify(createResponsePayload({}, endedTurnId)));
                   }
                 })();
               }
@@ -842,6 +910,7 @@ function createMediaStreamHandler({
                     media: { payload: mulawBase64 },
                   })
                 );
+                metrics.onAudioSent(ev.response_id);
               } catch (err) {
                 logger.warn({ callSid, err: err.message }, "Audio convert failed");
               }

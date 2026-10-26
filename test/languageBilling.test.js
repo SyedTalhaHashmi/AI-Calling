@@ -122,4 +122,32 @@ check("flight how-long is not billing", () => {
   assert.ok(!isBillingQuestion("how long is the flight from Bogota to Miami?"));
 });
 
+check("is-this-call-free questions are billing (baseline miss)", () => {
+  assert.ok(isBillingQuestion("Is this call free?"));
+  assert.ok(isBillingQuestion("is this phone call free"));
+  assert.ok(isBillingQuestion("Is the call free?"));
+  assert.ok(isBillingQuestion("Are these calls free?"));
+  assert.ok(isBillingQuestion("Is this service free?"));
+  assert.ok(isBillingQuestion("Is calling you free?"));
+  assert.ok(isBillingQuestion("Is talking to you free?"));
+  assert.ok(isBillingQuestion("¿Esta llamada es gratis?"));
+  assert.ok(isBillingQuestion("¿Es gratis esta llamada?"));
+});
+
+check("free things that are not our call stay out of billing", () => {
+  assert.ok(!isBillingQuestion("Is the museum free on Sundays?"));
+  assert.ok(!isBillingQuestion("Is parking at the airport free?"));
+  assert.ok(!isBillingQuestion("Is the wifi free at the hotel?"));
+  assert.ok(!isBillingQuestion("¿El museo es gratis los domingos?"));
+});
+
+check("fallback billing reply is caller-facing (no internal rules spoken)", () => {
+  for (const session of [undefined, {}, { billingMode: "legacy" }]) {
+    const reply = billingReply(session);
+    assert.ok(!/never assume|never say|do not invent|authoritative/i.test(reply), reply);
+    assert.ok(/buddycallai dot com/i.test(reply), reply);
+    assert.ok(!/unlimited|no charge|completely free/i.test(reply), reply);
+  }
+});
+
 if (!process.exitCode) console.log(`\nAll ${passed} checks passed`);

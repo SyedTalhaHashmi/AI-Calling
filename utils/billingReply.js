@@ -26,6 +26,17 @@ function isBillingQuestion(text) {
   ) {
     return true;
   }
+  // "Is this call free?" / "Are calls free?" — free asked about this call or service only
+  // (not "is the museum free"). Baseline miss: went to chat, which said "completely free".
+  if (
+    /\b(is|are)\s+(this|the|my|these|our|your)\s+(phone\s+)?(call|calls|chat|conversation|service)\s+free\b/i.test(
+      t
+    ) ||
+    /\b(is|are)\s+(calling|talking)(\s+(to|with))?(\s+you)?\s+free\b/i.test(t) ||
+    /\bllamadas?\b.*\bgratis\b|\bgratis\b.*\bllamadas?\b/i.test(t)
+  ) {
+    return true;
+  }
   // Monthly/usage limits, minutes caps — never let chat invent "unlimited"
   if (
     /\b((monthly|daily|weekly|usage|talk|call|minute|time)\s+limit|limit\s+to\s+speak|how many minutes|minutes (per|a) month)\b/i.test(
@@ -89,7 +100,7 @@ function billingReply(session) {
 
   return (
     `Call time depends on your Buddy Call plan. ` +
-    `See minutes and pricing at buddycallai dot com. Never assume unlimited free time.`
+    `See minutes and pricing at buddycallai dot com.`
   );
 }
 

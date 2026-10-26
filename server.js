@@ -109,6 +109,7 @@ function buildServer() {
     flightsService,
     stocksService,
     twilioClient: twilioVoiceClient,
+    latencyMetricsEnabled: config.latencyMetricsEnabled,
   });
 
   wss.on("connection", (ws, req) => {

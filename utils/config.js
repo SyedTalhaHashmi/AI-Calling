@@ -97,6 +97,8 @@ const config = {
    * Only served when ENABLE_MIC_TEST=true — keep off in production.
    */
   micTestEnabled: process.env.ENABLE_MIC_TEST === "true",
+  /** Per-turn latency log lines ("turn_latency" / "call_latency"). Logging only; on unless "false". */
+  latencyMetricsEnabled: process.env.LATENCY_METRICS !== "false",
 };
 
 module.exports = config;

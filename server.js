@@ -84,7 +84,8 @@ function buildServer() {
   const worldTimeService = createWorldTimeService(
     config.rapidApi.key,
     config.rapidApi.worldTimeHost,
-    logger
+    logger,
+    { enabled: config.rapidApi.worldTimeEnabled }
   );
   const placesService = createPlacesService(config.googlePlaces.apiKey, logger);
   const travelService = createTravelService(config.travelpayouts.token, logger);

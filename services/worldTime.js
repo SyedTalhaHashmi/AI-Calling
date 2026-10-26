@@ -3,8 +3,12 @@ const { MemoryCache } = require("./cache");
 
 const BASE = "https://world-time-api3.p.rapidapi.com/api";
 
-function createWorldTimeService(rapidApiKey, host, logger) {
-  if (!rapidApiKey) {
+/**
+ * RapidAPI world time — opt-in only (WORLD_TIME_API_ENABLED=true). By default local time comes
+ * from Node's built-in time-zone data (services/time.js), which needs no network call.
+ */
+function createWorldTimeService(rapidApiKey, host, logger, { enabled = false } = {}) {
+  if (!enabled || !rapidApiKey) {
     return {
       enabled: false,
       getTimeByTimezone: async () => ({ error: "World time API is not configured." }),

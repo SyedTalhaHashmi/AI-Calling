@@ -8,6 +8,7 @@ const { EventEmitter } = require("events");
 const WebSocket = require("ws");
 const createMediaStreamHandler = require("../handlers/mediaStream");
 const { CallStore } = require("../utils/callStore");
+const createTimeService = require("../services/time");
 
 let passed = 0;
 async function check(name, fn) {
@@ -56,8 +57,14 @@ function stubServices({ weatherDelayMs = 0 } = {}) {
         return { city, country: country || "CO", temp: 18, description: "foggy" };
       },
     },
-    timeService: { enabled: true, getCurrentTime: () => ({ time: "1:00 PM", timezone: "UTC" }), resolveTimezone: () => null },
-    worldTimeService: { enabled: false },
+    timeService: createTimeService(),
+    worldTimeService: {
+      enabled: false,
+      getTimeByTimezone: async (tz) => {
+        calls.push(["worldTime", tz]);
+        return { error: "disabled" };
+      },
+    },
     placesService: { enabled: false },
     travelService: { enabled: false },
     newsService: { enabled: false },
@@ -172,6 +179,51 @@ const weatherCall = (callId, args) => ({
     await c.say("What's the weather in Bogota?");
     await waitFor(() => c.creates().length === 2);
     assert.ok(/18 degrees and foggy/.test(c.creates()[1].response.instructions));
+    c.close();
+  });
+
+  await check("regex mode: time in an unlisted city uses its local zone, not UTC", async () => {
+    const c = await startCall({ routerMode: "regex" });
+    await c.say("What time is it in Bogota?");
+    await waitFor(() => c.creates().length === 2);
+    const r = c.creates()[1].response;
+    const expected = createTimeService().getCurrentTime("America/Bogota").time;
+    assert.ok(r.instructions.includes(`${expected} in Bogota`), r.instructions);
+    assert.ok(!/UTC/.test(r.instructions), r.instructions);
+    assert.deepStrictEqual(c.calls, [], "world time API not called");
+    c.close();
+  });
+
+  await check("regex mode: time with no place asks which city", async () => {
+    const c = await startCall({ routerMode: "regex" });
+    await c.say("What time is it?");
+    await waitFor(() => c.creates().length === 2);
+    const r = c.creates()[1].response;
+    assert.ok(/Which city/i.test(r.instructions), r.instructions);
+    assert.ok(!/\d{1,2}:\d{2}/.test(r.instructions), "no time guessed");
+    c.close();
+  });
+
+  await check("regex mode: naming a city after 'Which city?' answers the time", async () => {
+    const c = await startCall({ routerMode: "regex" });
+    await c.say("What time is it?");
+    await waitFor(() => c.creates().length === 2);
+    await c.completeLast([]);
+    await c.say("Madrid", "item-city");
+    await waitFor(() => c.creates().length === 3);
+    const expected = createTimeService().getCurrentTime("Europe/Madrid").time;
+    assert.ok(c.creates()[2].response.instructions.includes(`${expected} in Madrid`));
+    c.close();
+  });
+
+  await check("regex mode: an unrelated reply after 'Which city?' goes to normal chat", async () => {
+    const c = await startCall({ routerMode: "regex" });
+    await c.say("What time is it?");
+    await waitFor(() => c.creates().length === 2);
+    await c.completeLast([]);
+    await c.say("Tell me a fun fact about octopuses.", "item-chat");
+    await waitFor(() => c.creates().length === 3);
+    assert.ok(/^Reply in English only/.test(c.creates()[2].response.instructions));
     c.close();
   });
 

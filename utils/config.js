@@ -44,6 +44,8 @@ const config = {
   },
   rapidApi: {
     key: process.env.RAPIDAPI_KEY || "",
+    /** RapidAPI world time is opt-in; default answers come from built-in time-zone data. */
+    worldTimeEnabled: process.env.WORLD_TIME_API_ENABLED === "true",
     worldTimeHost:
       process.env.WORLD_TIME_API_HOST || "world-time-api3.p.rapidapi.com",
   },

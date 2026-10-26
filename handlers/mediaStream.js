@@ -610,7 +610,13 @@ function createMediaStreamHandler({
               return;
             }
 
-            const intent = resolveIntent(trimmed);
+            // Last turn asked "Which city?" for the time — a bare place name answers it
+            const awaitingTimeCity = Boolean(sessionRef?.awaitingTimeCity);
+            if (sessionRef) sessionRef.awaitingTimeCity = false;
+            let intent = resolveIntent(trimmed);
+            if (awaitingTimeCity && intent === "chat" && timeService?.resolvePlace(trimmed)) {
+              intent = "time";
+            }
             logger.info({ callSid, intent }, "Intent resolved");
             metrics.setRoute(turnId, "fast_path", intent);
 
@@ -668,20 +674,26 @@ function createMediaStreamHandler({
               return;
             }
             if (intent === "time" && timeService?.enabled) {
-              const tz = timeService.resolveTimezone(trimmed);
+              const place = timeService.resolvePlace(trimmed);
+              // Unknown or missing place: ask — never read out UTC as local time
+              if (!place) {
+                if (sessionRef) sessionRef.awaitingTimeCity = true;
+                sendReply("Which city should I check the time for?", { multilingual: true });
+                return;
+              }
+              const tz = place.timezone;
               (async () => {
-                if (tz && worldTimeService?.enabled) {
+                if (worldTimeService?.enabled) {
                   const r = await timed("world_time", () =>
                     worldTimeService.getTimeByTimezone(tz)
                   );
                   if (!r.error && r.datetime) {
-                    sendReply(`It is ${new Date(r.datetime).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true })} in ${tz.replace(/_/g, " ")}.`, { multilingual: true });
+                    sendReply(`It is ${new Date(r.datetime).toLocaleTimeString("en-US", { timeZone: tz, hour: "numeric", minute: "2-digit", hour12: true })} in ${place.label}.`, { multilingual: true });
                     return;
                   }
                 }
-                const { time, timezone } = timeService.getCurrentTime(tz || undefined);
-                const fact = tz ? `${time} in ${timezone.replace(/_/g, " ")}` : time;
-                sendReply(fact, { multilingual: true });
+                const { time } = timeService.getCurrentTime(tz);
+                sendReply(`${time} in ${place.label}`, { multilingual: true });
               })();
               return;
             }

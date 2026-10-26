@@ -110,6 +110,8 @@ function buildServer() {
     stocksService,
     twilioClient: twilioVoiceClient,
     latencyMetricsEnabled: config.latencyMetricsEnabled,
+    routerMode: config.routerMode,
+    toolDeadlineMs: config.toolDeadlineMs,
   });
 
   wss.on("connection", (ws, req) => {
@@ -123,7 +125,7 @@ if (require.main === module) {
   const server = buildServer();
   server.listen(config.port, () => {
     logger.info(
-      { port: config.port, streaming: true },
+      { port: config.port, streaming: true, routerMode: config.routerMode },
       "AI phone assistant server is running"
     );
   });

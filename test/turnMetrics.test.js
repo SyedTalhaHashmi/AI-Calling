@@ -72,6 +72,37 @@ function setup(opts = {}) {
     ]);
   });
 
+  await check("tool turn separates acknowledgement audio from answer audio", async () => {
+    const s = setup();
+    const m = s.metrics;
+    s.at(0); m.onSpeechStopped("item10");
+    s.at(1200); m.onTranscript("item10", "weather in Bogota");
+    m.onResponseCreateSent("item10", 1);
+    m.onResponseCreated("ack", "1");
+    s.at(1800); m.onAudioSent("ack");
+    m.onResponseEnded("ack", "completed", { functionCall: true });
+    s.at(2000); m.onToolResultsSent("item10");
+    m.onResponseCreateSent("item10", 2);
+    m.onResponseCreated("answer", "2");
+    s.at(2600); m.onAudioSent("answer");
+    m.onResponseEnded("answer", "completed");
+    const [t] = s.turns();
+    assert.strictEqual(t.endOfSpeechToFirstAudioMs, 1800);
+    assert.strictEqual(t.endOfSpeechToAnswerAudioMs, 2600);
+  });
+
+  await check("without tools, answer audio equals first audio", async () => {
+    const s = setup();
+    const m = s.metrics;
+    s.at(0); m.onSpeechStopped("item11");
+    m.onTranscript("item11", "hi");
+    m.onResponseCreateSent("item11", 1);
+    m.onResponseCreated("r11", "1");
+    s.at(900); m.onAudioSent("r11");
+    m.onResponseEnded("r11", "completed");
+    assert.strictEqual(s.turns()[0].endOfSpeechToAnswerAudioMs, 900);
+  });
+
   await check("deferred turn logs without a reply", async () => {
     const s = setup();
     const m = s.metrics;

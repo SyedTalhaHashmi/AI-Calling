@@ -30,22 +30,38 @@ const {
   billingInstruction,
 } = require("../utils/billingReply");
 const { createTurnMetrics } = require("../utils/turnMetrics");
+const {
+  buildToolDefinitions,
+  createToolExecutor,
+  collectFunctionCalls,
+  runToolCalls,
+  fetchWeatherForPlace,
+  fetchWeatherForPlaces,
+  TOOLS_SESSION_RULES,
+  toolsTurnInstruction,
+  toolsFollowUpInstruction,
+  toolChoiceAgreement,
+} = require("./realtimeTools");
 
 const OPENAI_REALTIME_URL = "wss://api.openai.com/v1/realtime?model=gpt-realtime";
+/** Tools mode: after this many tool rounds in one turn, the follow-up must speak (tools: []). */
+const MAX_TOOL_ROUNDS = 2;
 
 // Short, warm greeting — then stop and listen (no long intros)
 const GREETING = "Hi! I'm Buddy, your AI friend. Ask me anything you want.";
 // Friendly voice: marin (female); alternatives: coral, shimmer, sage
 const VOICE = "marin";
 
-function buildRealtimeInstructions(session) {
-  return [
+function buildRealtimeInstructions(session, { toolsMode = false } = {}) {
+  const parts = [
     SYSTEM_PROMPT,
     "",
     "## Active call rules (authoritative — follow these)",
     languageInstruction(session),
     billingInstruction(session),
-  ].join("\n");
+  ];
+  if (toolsMode) parts.push("", TOOLS_SESSION_RULES);
+  return parts.join("\n");
 }
 
 /** Realtime input: denoise, then semantic turn detection (ChatGPT-like; waits on fillers / incomplete thoughts). */
@@ -154,18 +170,6 @@ function formatWeatherFact(result) {
   return `${result.temp} degrees and ${result.description} in ${where}${humidity}`;
 }
 
-async function fetchWeatherForPlace(place, openMeteoService, weatherService) {
-  const city = place.city;
-  const country = place.country;
-  if (openMeteoService?.enabled) {
-    return openMeteoService.getByCity(city, country);
-  }
-  if (weatherService?.enabled) {
-    return weatherService.getByCity(city, country);
-  }
-  return { error: "Weather not configured." };
-}
-
 const TIME_UP_INSTRUCTION =
   "Say exactly: Your time for this call is up. To keep talking, subscribe or add minutes at buddycallai dot com. Goodbye.";
 
@@ -186,10 +190,46 @@ function createMediaStreamHandler({
   stocksService,
   twilioClient,
   latencyMetricsEnabled = true,
+  /** "regex" (default, existing fast paths) or "tools" (model picks existing-service tools). */
+  routerMode = "regex",
+  toolDeadlineMs = 2500,
+  realtimeUrl = OPENAI_REALTIME_URL,
 }) {
+  const toolsMode = routerMode === "tools";
+  const toolServices = {
+    weatherService,
+    openMeteoService,
+    timeService,
+    worldTimeService,
+    placesService,
+    travelService,
+    newsService,
+    fxService,
+    sportsService,
+    flightsService,
+    stocksService,
+  };
+  const toolDefinitions = toolsMode ? buildToolDefinitions(toolServices) : [];
+  const toolExecutor = toolsMode
+    ? createToolExecutor({ services: toolServices, logger, deadlineMs: toolDeadlineMs })
+    : null;
+
+  /** Session tool config: tools mode → all enabled tools; regex mode → unchanged legacy weather tool. */
+  function sessionToolFields() {
+    if (toolsMode) return { tools: toolDefinitions, tool_choice: "auto" };
+    if (weatherService && weatherService.enabled) {
+      return { tools: [WEATHER_TOOL], tool_choice: "auto" };
+    }
+    return {};
+  }
+
   return function handleMediaStream(twilioWs, req) {
     /** Logging-only latency metrics; never affects call flow. */
     const metrics = createTurnMetrics({ logger, enabled: latencyMetricsEnabled });
+    /** Tools mode: client_gen of a model turn → { turnId, regexIntent, rounds }. */
+    const toolTurns = new Map();
+    /** Bumped whenever the caller starts speaking; stale tool results are not spoken. */
+    let userSpeechSeq = 0;
     let callSid = null;
     let streamSid = null;
     let openaiWs = null;
@@ -246,6 +286,72 @@ function createMediaStreamHandler({
       if (twilioWs && twilioWs.readyState === WebSocket.OPEN && streamSid) {
         twilioWs.send(JSON.stringify({ event: "clear", streamSid }));
       }
+    }
+
+    /**
+     * Tools mode: run every function call in a finished model response (in parallel),
+     * return outputs, then ask for the spoken answer — unless the caller spoke meanwhile.
+     */
+    function handleToolsResponse(response, metricsTurnId) {
+      const gen = String(response?.metadata?.client_gen ?? "");
+      const toolTurn = toolTurns.get(gen) || null;
+      toolTurns.delete(gen);
+      const calls = collectFunctionCalls(response);
+      const toolNames = calls.map((c) => c.name);
+      if (toolTurn && toolTurn.rounds === 0) {
+        logger.info(
+          {
+            callSid,
+            regexIntent: toolTurn.regexIntent,
+            tools: toolNames,
+            agreement: toolChoiceAgreement(toolTurn.regexIntent, toolNames),
+          },
+          "Tool choice"
+        );
+      }
+      if (!calls.length) return;
+
+      const rounds = (toolTurn?.rounds || 0) + 1;
+      const speechSeqAtStart = userSpeechSeq;
+      (async () => {
+        const outputs = await runToolCalls(calls, toolExecutor, {
+          timed: (label, fn) => metrics.time(metricsTurnId, label, fn),
+        });
+        if (!openaiWs || openaiWs.readyState !== WebSocket.OPEN) return;
+        for (const o of outputs) {
+          openaiWs.send(
+            JSON.stringify({
+              type: "conversation.item.create",
+              item: { type: "function_call_output", call_id: o.call_id, output: o.output },
+            })
+          );
+          logger.info({ callSid, tool: o.name, args: o.args, result: o.result }, "Tool result");
+        }
+        metrics.onToolResultsSent(metricsTurnId);
+
+        if (userSpeechSeq !== speechSeqAtStart || callStore.get(callSid)?.callEnding) {
+          logger.info({ callSid }, "Tool answer not spoken: caller spoke or call ending");
+          metrics.finishWithoutReply(metricsTurnId, "interrupted_during_tool");
+          return;
+        }
+        if (responseInProgress) {
+          logger.info({ callSid }, "Tool answer skipped: response already in progress");
+          metrics.finishWithoutReply(metricsTurnId, "skipped_busy");
+          return;
+        }
+        const langName = languageLabel(callStore.get(callSid)?.replyLanguage || "en");
+        const fields = { instructions: toolsFollowUpInstruction(langName) };
+        // Cap tool rounds: last follow-up must speak, not call more tools
+        if (rounds >= MAX_TOOL_ROUNDS) fields.tools = [];
+        const payload = createResponsePayload(fields, metricsTurnId);
+        toolTurns.set(String(payload.response.metadata.client_gen), {
+          ...(toolTurn || { regexIntent: null }),
+          rounds,
+        });
+        openaiWs.send(JSON.stringify(payload));
+      })().catch((err) => {
+        logger.error({ callSid, err: err.message }, "Tools turn failed");
+      });
     }
 
     const cleanup = () => {
@@ -329,7 +435,7 @@ function createMediaStreamHandler({
         }
 
         // Connect to OpenAI Realtime
-        openaiWs = new WebSocket(OPENAI_REALTIME_URL, {
+        openaiWs = new WebSocket(realtimeUrl, {
           headers: {
             Authorization: `Bearer ${openaiApiKey}`,
           },
@@ -343,18 +449,15 @@ function createMediaStreamHandler({
           }
           const session = {
             type: "realtime",
-            instructions: buildRealtimeInstructions(billSession),
+            instructions: buildRealtimeInstructions(billSession, { toolsMode }),
             audio: {
               input: REALTIME_INPUT_AUDIO,
               output: {
                 voice: VOICE,
               },
             },
+            ...sessionToolFields(),
           };
-          if (weatherService && weatherService.enabled) {
-            session.tools = [WEATHER_TOOL];
-            session.tool_choice = "auto";
-          }
           openaiWs.send(
             JSON.stringify({ type: "session.update", session })
           );
@@ -397,12 +500,9 @@ function createMediaStreamHandler({
             const sess = callStore.get(callSid);
             const payload = {
               type: "realtime",
-              instructions: buildRealtimeInstructions(sess),
+              instructions: buildRealtimeInstructions(sess, { toolsMode }),
+              ...sessionToolFields(),
             };
-            if (weatherService && weatherService.enabled) {
-              payload.tools = [WEATHER_TOOL];
-              payload.tool_choice = "auto";
-            }
             openaiWs.send(
               JSON.stringify({ type: "session.update", session: payload })
             );
@@ -485,6 +585,31 @@ function createMediaStreamHandler({
               return;
             }
 
+            // Tools mode: the model picks an existing-service tool (or answers directly).
+            // Regex intent is computed only for the shadow agreement log.
+            if (toolsMode) {
+              const regexIntent = resolveIntent(trimmed);
+              metrics.setRoute(turnId, "tools", regexIntent);
+              if (openaiWs?.readyState !== WebSocket.OPEN) return;
+              if (responseInProgress) {
+                logger.info({ callSid }, "Skip tools turn: response already in progress");
+                metrics.finishWithoutReply(turnId, "skipped_busy");
+                return;
+              }
+              const langName = languageLabel(sessionRef?.replyLanguage || "en");
+              const payload = createResponsePayload(
+                { instructions: toolsTurnInstruction(langName) },
+                turnId
+              );
+              toolTurns.set(String(payload.response.metadata.client_gen), {
+                turnId,
+                regexIntent,
+                rounds: 0,
+              });
+              openaiWs.send(JSON.stringify(payload));
+              return;
+            }
+
             const intent = resolveIntent(trimmed);
             logger.info({ callSid, intent }, "Intent resolved");
             metrics.setRoute(turnId, "fast_path", intent);
@@ -510,17 +635,20 @@ function createMediaStreamHandler({
               const places = extractCityAndCountry(trimmed, sessionRef?.placeHint);
               (async () => {
                 try {
-                  const facts = [];
-                  for (const place of places) {
-                    const result = await timed("weather", () =>
+                  // All places at once; facts keep the spoken order
+                  const results = await fetchWeatherForPlaces(places, (place) =>
+                    timed("weather", () =>
                       fetchWeatherForPlace(place, openMeteoService, weatherService)
-                    );
-                    facts.push(formatWeatherFact(result));
+                    )
+                  );
+                  const facts = [];
+                  places.forEach((place, i) => {
+                    facts.push(formatWeatherFact(results[i]));
                     logger.info(
-                      { callSid, city: place.city, country: place.country, result },
+                      { callSid, city: place.city, country: place.country, result: results[i] },
                       "Weather fast path"
                     );
-                  }
+                  });
                   const fact =
                     facts.length > 1
                       ? facts.join(" And ")
@@ -762,6 +890,7 @@ function createMediaStreamHandler({
           }
 
           if (ev.type === "input_audio_buffer.speech_started") {
+            userSpeechSeq += 1;
             metrics.onSpeechStarted(ev.item_id);
             interruptAgentPlayback();
           }
@@ -831,7 +960,13 @@ function createMediaStreamHandler({
             }
             // else: activeResponseId null with endedId set → stale after interrupt; ignore
 
+            if (toolsMode && isActiveCompletion && ev.type === "response.done") {
+              handleToolsResponse(ev.response, endedTurnId);
+            }
+
+            // Regex mode only: legacy single weather tool
             if (
+              !toolsMode &&
               isActiveCompletion &&
               ev.type === "response.done" &&
               (weatherService?.enabled || openMeteoService?.enabled)

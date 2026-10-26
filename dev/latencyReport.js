@@ -15,6 +15,7 @@ const STAGES = [
   ["fetchTotalMs", "data fetch"],
   ["responseCreateToFirstAudioMs", "reply requested → first audio"],
   ["endOfSpeechToFirstAudioMs", "**speech end → first audio**"],
+  ["endOfSpeechToAnswerAudioMs", "speech end → answer audio"],
 ];
 
 async function readRecords(paths) {
@@ -42,7 +43,11 @@ function fmt(v) {
 
 function routeKey(r) {
   if (r.kind === "system") return `system:${r.path}`;
-  if (r.path === "fast_path" || (r.path === "chat" && r.intent && r.intent !== "chat")) {
+  if (
+    r.path === "fast_path" ||
+    r.path === "tools" ||
+    (r.path === "chat" && r.intent && r.intent !== "chat")
+  ) {
     return `${r.path}:${r.intent}`;
   }
   return r.path || "unrouted";

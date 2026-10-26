@@ -22,12 +22,21 @@ const MULAW_SILENCE = 0xff;
 const REPLY_TIMEOUT_MS = 15000;
 const NO_REPLY_EXPECTED_WAIT_MS = 6000;
 const AFTER_PLAYBACK_GAP_MS = 1000;
+/** Reply is over after this much outbound silence (tools mode pauses between acknowledgement and answer). */
+const DEFAULT_QUIET_MS = 3500;
 
 function parseArgs(argv) {
-  const args = { url: "ws://localhost:3000/media-stream", perCall: 8, out: null, audio: null };
+  const args = {
+    url: "ws://localhost:3000/media-stream",
+    perCall: 8,
+    out: null,
+    audio: null,
+    quietMs: DEFAULT_QUIET_MS,
+  };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--url") args.url = argv[++i];
+    else if (a === "--quiet-ms") args.quietMs = Number(argv[++i]);
     else if (a === "--per-call") args.perCall = Number(argv[++i]);
     else if (a === "--out") args.out = argv[++i];
     else if (a === "--audio") args.audio = argv[++i];
@@ -88,6 +97,8 @@ function openCall(url, label) {
     outboundBytes: 0,
     firstOutboundAt: null,
     lastOutboundAt: null,
+    /** Only count agent audio once the current prompt has finished (ignore late audio from earlier turns). */
+    listening: true,
   };
   let timer = null;
   let seq = 0;
@@ -113,6 +124,7 @@ function openCall(url, label) {
         sendFrame(frame);
         if (!state.queue.length) {
           state.lastSpeechFrameAt = Date.now();
+          state.listening = true;
           const cb = state.onQueueDrained;
           state.onQueueDrained = null;
           if (cb) cb();
@@ -154,7 +166,7 @@ function openCall(url, label) {
     } catch {
       return;
     }
-    if (msg.event === "media" && msg.media?.payload) {
+    if (msg.event === "media" && msg.media?.payload && state.listening) {
       const now = Date.now();
       if (state.firstOutboundAt == null) state.firstOutboundAt = now;
       state.lastOutboundAt = now;
@@ -167,6 +179,7 @@ function openCall(url, label) {
     ready,
     /** Queue speech; resolves when the last speech frame has been sent. */
     speak(mulaw) {
+      state.listening = false;
       return new Promise((resolve) => {
         for (let i = 0; i < mulaw.length; i += FRAME_SAMPLES) {
           const frame = Buffer.alloc(FRAME_SAMPLES, MULAW_SILENCE);
@@ -192,7 +205,7 @@ function openCall(url, label) {
 }
 
 /** Wait for first agent audio, then for its real-time playback to finish. */
-async function waitForReply(call, timeoutMs) {
+async function waitForReply(call, timeoutMs, quietMs) {
   const start = Date.now();
   while (call.state.firstOutboundAt == null) {
     if (Date.now() - start > timeoutMs) return { gotAudio: false };
@@ -202,7 +215,7 @@ async function waitForReply(call, timeoutMs) {
   for (;;) {
     const playbackEnd = call.state.firstOutboundAt + (call.state.outboundBytes / 8000) * 1000;
     const quietFor = Date.now() - call.state.lastOutboundAt;
-    if (quietFor > 1200 && Date.now() >= playbackEnd) break;
+    if (quietFor > quietMs && Date.now() >= playbackEnd) break;
     await sleep(50);
   }
   return {
@@ -227,7 +240,7 @@ async function main() {
     await call.ready;
     console.error(`call ${c + 1}: ${call.state.callSid} (${batch.length} prompts)`);
 
-    const greeting = await waitForReply(call, REPLY_TIMEOUT_MS);
+    const greeting = await waitForReply(call, REPLY_TIMEOUT_MS, args.quietMs);
     await sleep(AFTER_PLAYBACK_GAP_MS);
 
     for (const [i, p] of batch.entries()) {
@@ -238,7 +251,8 @@ async function main() {
       const expectReply = p.category !== "hold";
       const reply = await waitForReply(
         call,
-        expectReply ? REPLY_TIMEOUT_MS : NO_REPLY_EXPECTED_WAIT_MS
+        expectReply ? REPLY_TIMEOUT_MS : NO_REPLY_EXPECTED_WAIT_MS,
+        args.quietMs
       );
       const row = {
         callSid: call.state.callSid,

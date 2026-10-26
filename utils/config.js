@@ -1,4 +1,5 @@
 const dotenv = require("dotenv");
+const { parseRouterMode, parseToolDeadlineMs } = require("../handlers/realtimeTools");
 
 dotenv.config();
 
@@ -99,6 +100,10 @@ const config = {
   micTestEnabled: process.env.ENABLE_MIC_TEST === "true",
   /** Per-turn latency log lines ("turn_latency" / "call_latency"). Logging only; on unless "false". */
   latencyMetricsEnabled: process.env.LATENCY_METRICS !== "false",
+  /** "regex" (default: existing fast paths) or "tools" (model picks existing-service tools). */
+  routerMode: parseRouterMode(process.env.ROUTER_MODE),
+  /** Tools mode only: per-tool time limit. */
+  toolDeadlineMs: parseToolDeadlineMs(process.env.TOOL_DEADLINE_MS),
 };
 
 module.exports = config;

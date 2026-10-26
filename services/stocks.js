@@ -1,10 +1,14 @@
 /**
  * Alpha Vantage — stocks (GLOBAL_QUOTE), crypto exchange rate, US rates.
- * Free: 5 req/min, 500/day. Cache callers should prefer short TTLs.
+ * Free: 25 req/day. Successful answers are cached briefly to save quota.
  */
 const axios = require("axios");
+const { MemoryCache } = require("./cache");
 
 const BASE = "https://www.alphavantage.co/query";
+const QUOTE_TTL_MS = 60 * 1000;
+const CRYPTO_TTL_MS = 60 * 1000;
+const RATES_TTL_MS = 6 * 60 * 60 * 1000;
 
 const COMMON_SYMBOLS = {
   apple: "AAPL",
@@ -47,6 +51,8 @@ function createStocksService(apiKey, logger) {
       enabled: false,
     };
   }
+
+  const cache = new MemoryCache();
 
   function resolveSymbol(text) {
     const raw = String(text || "").trim();
@@ -102,6 +108,9 @@ function createStocksService(apiKey, logger) {
           "Which stock? Say the company or ticker, for example Apple or A A P L.",
       };
     }
+    const cacheKey = `quote:${sym}`;
+    const cached = cache.get(cacheKey);
+    if (cached) return cached;
     try {
       const res = await axios.get(BASE, {
         params: { function: "GLOBAL_QUOTE", symbol: sym, apikey: apiKey },
@@ -116,7 +125,7 @@ function createStocksService(apiKey, logger) {
       }
       const price = quote["05. price"];
       const percent = quote["10. change percent"];
-      return {
+      const result = {
         symbol: quote["01. symbol"],
         price: price ? Number(price) : null,
         changePercent: percent ? percent.replace("%", "") : null,
@@ -124,6 +133,7 @@ function createStocksService(apiKey, logger) {
           ? `${quote["01. symbol"]} is $${Number(price).toFixed(2)}${percent ? ", " + percent : ""}.`
           : `I couldn't get a price for ${quote["01. symbol"]} right now.`,
       };
+      return price ? cache.set(cacheKey, result, QUOTE_TTL_MS) : result;
     } catch (err) {
       logger.warn({ err: err.message, symbol: sym }, "Alpha Vantage stock request failed");
       return { error: "I couldn't fetch that stock price right now. Please try again shortly." };
@@ -137,6 +147,9 @@ function createStocksService(apiKey, logger) {
         error: "Which crypto? Say Bitcoin, Ethereum, or another coin name.",
       };
     }
+    const cacheKey = `crypto:${sym}`;
+    const cached = cache.get(cacheKey);
+    if (cached) return cached;
     try {
       const res = await axios.get(BASE, {
         params: {
@@ -160,11 +173,15 @@ function createStocksService(apiKey, logger) {
           ? n.toFixed(2)
           : n.toPrecision(4)
         : String(price);
-      return {
-        symbol: sym,
-        price: n,
-        message: `${sym} is about $${pretty} U S D right now.`,
-      };
+      return cache.set(
+        cacheKey,
+        {
+          symbol: sym,
+          price: n,
+          message: `${sym} is about $${pretty} U S D right now.`,
+        },
+        CRYPTO_TTL_MS
+      );
     } catch (err) {
       logger.warn({ err: err.message, symbol: sym }, "Alpha Vantage crypto request failed");
       return {
@@ -174,6 +191,8 @@ function createStocksService(apiKey, logger) {
   }
 
   async function getUsInterestRate() {
+    const cached = cache.get("rates:fedfunds");
+    if (cached) return cached;
     try {
       const res = await axios.get(BASE, {
         params: {
@@ -199,11 +218,15 @@ function createStocksService(apiKey, logger) {
             "I couldn't read the Fed rate just now. Many banks offer savings around four to five percent — confirm with your bank.",
         };
       }
-      return {
-        rate: value,
-        date,
-        message: `The latest U S Federal Funds rate is about ${value.toFixed(2)} percent as of ${date}. Bank savings APYs vary, often near that range — check your bank for the exact rate.`,
-      };
+      return cache.set(
+        "rates:fedfunds",
+        {
+          rate: value,
+          date,
+          message: `The latest U S Federal Funds rate is about ${value.toFixed(2)} percent as of ${date}. Bank savings APYs vary, often near that range — check your bank for the exact rate.`,
+        },
+        RATES_TTL_MS
+      );
     } catch (err) {
       logger.warn({ err: err.message }, "Alpha Vantage rates request failed");
       return {

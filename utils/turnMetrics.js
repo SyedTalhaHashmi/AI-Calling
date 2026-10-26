@@ -31,6 +31,11 @@ function computeTurnLatency(turn) {
     fetchTotalMs,
     responseCreateToFirstAudioMs: diff(t.responseCreateSent, t.firstAudioSent),
     endOfSpeechToFirstAudioMs: diff(t.speechStopped, t.firstAudioSent),
+    // Tools mode: first audio may be the acknowledgement; this is when the answer itself starts
+    endOfSpeechToAnswerAudioMs: diff(
+      t.speechStopped,
+      t.toolResultsSent != null ? t.answerAudioSent : t.firstAudioSent
+    ),
     speechMs: diff(t.speechStarted, t.speechStopped),
   };
 }
@@ -50,6 +55,7 @@ function noopMetrics() {
     onResponseCreateSent() {},
     onResponseCreated() {},
     onAudioSent() {},
+    onToolResultsSent() {},
     onResponseEnded() {},
     turnForResponse: () => null,
     flush() {},
@@ -245,7 +251,15 @@ function createEnabledMetrics({ logger, now }) {
 
     onAudioSent(responseId) {
       const turnId = responseToTurn.get(responseId);
-      if (turnId) mark(turnId, "firstAudioSent");
+      if (!turnId) return;
+      mark(turnId, "firstAudioSent");
+      const turn = getTurn(turnId, false);
+      if (turn && turn.marks.toolResultsSent != null) mark(turnId, "answerAudioSent");
+    },
+
+    /** Tools mode: function_call_output items sent back to the model. */
+    onToolResultsSent(turnId) {
+      mark(turnId, "toolResultsSent");
     },
 
     /**

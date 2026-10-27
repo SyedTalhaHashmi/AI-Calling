@@ -45,7 +45,7 @@ class FakeTwilio extends EventEmitter {
   }
 }
 
-function stubServices({ weatherDelayMs = 0, webSearch = false, fxError = false } = {}) {
+function stubServices({ weatherDelayMs = 0, webSearch = false, fxError = false, ratesError = false, flights = false } = {}) {
   const calls = [];
   const services = {
     webSearchService: webSearch
@@ -85,7 +85,15 @@ function stubServices({ weatherDelayMs = 0, webSearch = false, fxError = false }
         }
       : { enabled: false },
     sportsService: { enabled: false, detectSport: () => "football" },
-    flightsService: { enabled: false },
+    flightsService: flights
+      ? {
+          enabled: true,
+          getFlightStatus: async (n) => {
+            calls.push(["flight", n]);
+            return n ? { message: `Flight ${n} is on time.` } : { error: "Please say the flight number." };
+          },
+        }
+      : { enabled: false },
     stocksService: {
       enabled: true,
       getCryptoQuote: async (t) => {
@@ -93,14 +101,17 @@ function stubServices({ weatherDelayMs = 0, webSearch = false, fxError = false }
         return { message: "BTC is about $80000 U S D right now." };
       },
       getQuote: async () => ({ message: "AAPL is $1." }),
-      getUsInterestRate: async () => ({ message: "3.75" }),
+      getUsInterestRate: async () => {
+        if (ratesError) throw new Error("rates down");
+        return { message: "3.75" };
+      },
     },
   };
   return { services, calls };
 }
 
 /** Starts a call against a fake Realtime server; greeting already completed. */
-async function startCall({ routerMode, weatherDelayMs, webSearch, fxError } = {}) {
+async function startCall({ routerMode, weatherDelayMs, webSearch, fxError, ratesError, flights } = {}) {
   const server = new WebSocket.Server({ port: 0 });
   await new Promise((r) => server.on("listening", r));
   const received = [];
@@ -110,7 +121,7 @@ async function startCall({ routerMode, weatherDelayMs, webSearch, fxError } = {}
     ws.on("message", (d) => received.push(JSON.parse(d.toString())));
   });
 
-  const { services, calls } = stubServices({ weatherDelayMs, webSearch, fxError });
+  const { services, calls } = stubServices({ weatherDelayMs, webSearch, fxError, ratesError, flights });
   const handler = createMediaStreamHandler({
     callStore: new CallStore(),
     logger: silent,
@@ -310,6 +321,50 @@ const weatherCall = (callId, args) => ({
     assert.ok(/"Could not fetch exchange rate\."/.test(r.instructions), r.instructions);
     assert.ok(/^Say only the quoted sentence/.test(r.instructions), r.instructions);
     assert.ok(/no other facts or numbers/i.test(r.instructions.split('"')[0]), r.instructions);
+    c.close();
+  });
+
+  await check("regex mode: 'Is it hot in Miami or Orlando?' looks up both cities, not Rome", async () => {
+    const c = await startCall({ routerMode: "regex" });
+    await c.say("Is it hot in Miami or Orlando?");
+    await waitFor(() => c.creates().length === 2);
+    assert.deepStrictEqual(
+      c.calls.filter((x) => x[0] === "weather").map((x) => x[1]),
+      ["Miami", "Orlando"]
+    );
+    c.close();
+  });
+
+  await check("regex mode: a crashed rate lookup says so without guessing a number", async () => {
+    const c = await startCall({ routerMode: "regex", ratesError: true });
+    await c.say("What is the U.S. interest rate?");
+    await waitFor(() => c.creates().length === 2);
+    const quoted = c.creates()[1].response.instructions.split('"')[1] || "";
+    assert.ok(/couldn't/i.test(quoted), quoted);
+    assert.ok(!/percent|\d/.test(quoted), quoted);
+    c.close();
+  });
+
+  await check("regex mode: flight question without a number asks for it, no lookup", async () => {
+    const c = await startCall({ routerMode: "regex", flights: true });
+    await c.say("Is my flight delayed?");
+    await waitFor(() => c.creates().length === 2);
+    const r = c.creates()[1].response;
+    // Asked like the time handler's "Which city…?", not read out as a failed lookup
+    assert.ok(/^Say the following in English only/.test(r.instructions), r.instructions);
+    assert.ok(/which flight number/i.test(r.instructions), r.instructions);
+    // No stray full stop after the question mark ("check?.")
+    assert.ok(/check\?$/.test(r.instructions), r.instructions);
+    assert.deepStrictEqual(c.calls, []);
+    c.close();
+  });
+
+  await check("regex mode: flight question with a number looks it up", async () => {
+    const c = await startCall({ routerMode: "regex", flights: true });
+    await c.say("Is flight AA100 on time?");
+    await waitFor(() => c.creates().length === 2);
+    assert.deepStrictEqual(c.calls, [["flight", "AA100"]]);
+    assert.ok(/Flight AA100 is on time/.test(c.creates()[1].response.instructions));
     c.close();
   });
 

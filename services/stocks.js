@@ -206,7 +206,7 @@ function createStocksService(apiKey, logger) {
       if (!Array.isArray(series) || !series.length || series[0].value == null) {
         return {
           error:
-            "I couldn't fetch the latest Fed rate right now. Many U S savings rates are often around four to five percent — check your bank for exact APY.",
+            "I couldn't fetch the latest Fed rate right now. Please check the Federal Reserve website or your bank.",
         };
       }
       const latest = series[0];
@@ -215,7 +215,7 @@ function createStocksService(apiKey, logger) {
       if (!Number.isFinite(value)) {
         return {
           error:
-            "I couldn't read the Fed rate just now. Many banks offer savings around four to five percent — confirm with your bank.",
+            "I couldn't read the Fed rate just now. Please check the Federal Reserve website or your bank.",
         };
       }
       return cache.set(
@@ -223,7 +223,7 @@ function createStocksService(apiKey, logger) {
         {
           rate: value,
           date,
-          message: `The latest U S Federal Funds rate is about ${value.toFixed(2)} percent as of ${date}. Bank savings APYs vary, often near that range — check your bank for the exact rate.`,
+          message: `The latest U S Federal Funds rate is about ${value.toFixed(2)} percent as of ${date}. Savings rates vary, so check your bank for yours.`,
         },
         RATES_TTL_MS
       );
@@ -231,7 +231,7 @@ function createStocksService(apiKey, logger) {
       logger.warn({ err: err.message }, "Alpha Vantage rates request failed");
       return {
         error:
-          "I couldn't fetch live U S rates right now. Many savings accounts are around four to five percent — check your bank for the latest APY.",
+          "I couldn't fetch live U S rates right now. Please check the Federal Reserve website or your bank.",
       };
     }
   }

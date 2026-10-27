@@ -44,7 +44,8 @@ function parsePairFromUtterance(text) {
     const quote = wordToIso(m[2]);
     if (base && quote) return { base, quote };
   }
-  const toMatches = [...t.matchAll(/\b([\w]+)\s+to\s+([\w]+)\b/gi)];
+  // "dollars to pesos", "a dollar in pesos", "dollar to Mexican peso" (two-word quote)
+  const toMatches = [...t.matchAll(/\b([\w]+)\s+(?:to|in|into)\s+([\w]+(?:\s+[\w]+)?)\b/gi)];
   for (let i = toMatches.length - 1; i >= 0; i--) {
     const base = wordToIso(toMatches[i][1]);
     const quote = wordToIso(toMatches[i][2]);

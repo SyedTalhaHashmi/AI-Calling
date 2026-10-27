@@ -129,5 +129,13 @@ function meteoHandler(url) {
     assert.deepStrictEqual(fx.parsePairFromUtterance("convert the pesos to dollars"), { base: "COP", quote: "USD" });
   });
 
+  await check("fx parsing: 'a dollar in pesos' and two-word currency names", async () => {
+    const fx = createFxService(true, logger);
+    assert.deepStrictEqual(fx.parsePairFromUtterance("How much is a dollar in pesos?"), { base: "USD", quote: "COP" });
+    assert.deepStrictEqual(fx.parsePairFromUtterance("What is the dollar to Mexican peso rate?"), { base: "USD", quote: "MXN" });
+    assert.deepStrictEqual(fx.parsePairFromUtterance("How much is 100 euros in Japanese yen?"), { base: "EUR", quote: "JPY" });
+    assert.deepStrictEqual(fx.parsePairFromUtterance("How much is the euro in Spain?"), { base: null, quote: null });
+  });
+
   console.log(`\n${process.exitCode ? "Some checks failed" : `All ${passed} checks passed`}`);
 })();

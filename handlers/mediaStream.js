@@ -524,7 +524,7 @@ function createMediaStreamHandler({
             const langName = languageLabel(sess?.replyLanguage || "en");
             const instruction =
               opts.multilingual !== false
-                ? `Say the following in ${langName} only, one short sentence (15 to 20 words max): ${reply}.`
+                ? `Say the following in ${langName} only, one short sentence (15 to 20 words max): ${reply}${/[.?!]$/.test(reply) ? "" : "."}`
                 : `Say only the quoted sentence, word for word, with no other facts or numbers: "${reply}"`;
             // No tools on fast-path replies — prevents double weather/hotel answers
             openaiWs.send(
@@ -818,6 +818,11 @@ function createMediaStreamHandler({
             }
             if (intent === "flight_status" && flightsService?.enabled) {
               const flightIata = extractFlightNumber(trimmed);
+              // No number: ask, like the time handler — a word-for-word error reads as a refusal
+              if (!flightIata) {
+                sendReply("Which flight number should I check?", { multilingual: true });
+                return;
+              }
               (async () => {
                 try {
                   const result = await timed("flight_status", () =>
@@ -862,7 +867,7 @@ function createMediaStreamHandler({
                 } catch (err) {
                   logger.error({ callSid, err: err.message }, "Rates fast path failed");
                   sendReply(
-                    "Many U S savings rates are often around four to five percent — check your bank for the exact APY.",
+                    "I couldn't fetch live U S rates right now. Please check the Federal Reserve website or your bank.",
                     { multilingual: false }
                   );
                 }

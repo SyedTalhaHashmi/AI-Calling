@@ -148,6 +148,111 @@ check("genuine clock questions stay time", () => {
   }
 });
 
+check("'Is it hot in Miami or Orlando?' asks for both cities, not Italy", () => {
+  for (const text of [
+    "Is it hot in Miami or Orlando?",
+    "Is it hot in Miami or Orlando today?",
+  ]) {
+    assert.strictEqual(resolveIntent(text), "weather", text);
+    assert.deepStrictEqual(
+      extractCityAndCountry(text).map((p) => p.city),
+      ["Miami", "Orlando"],
+      text
+    );
+  }
+});
+
+check("pronoun 'it' is never read as a city or as Italy", () => {
+  for (const [text, city] of [
+    ["Is it cold in Chicago?", "Chicago"],
+    ["Is it sunny in Madrid right now?", "Madrid"],
+    ["Is it going to be hot in Miami tomorrow?", "Miami"],
+  ]) {
+    assert.deepStrictEqual(
+      extractCityAndCountry(text).map((p) => p.city),
+      [city],
+      text
+    );
+  }
+  for (const text of ["Is it hot today?", "Is it cold there?", "Is it cold in my area?"]) {
+    const places = extractCityAndCountry(text);
+    assert.ok(
+      places.every((p) => p.country !== "IT" && !/^(?:it|there|my area)\b/i.test(p.city)),
+      `${text} -> ${JSON.stringify(places)}`
+    );
+  }
+  // A real mention of Italy still works
+  assert.deepStrictEqual(extractCityAndCountry("Is it hot in Italy?"), [
+    { city: "Rome", country: "IT" },
+  ]);
+});
+
+check("'it' with no place falls back to the caller's country hint, not Italy", () => {
+  assert.deepStrictEqual(extractCityAndCountry("Is it cold there?", { country: "CO" }), [
+    { city: "Bogota", country: "CO" },
+  ]);
+});
+
+check("'UK' means Great Britain (GB), so London lookups don't fail", () => {
+  const { normalizeCountryCode } = require("../utils/placeResolve");
+  assert.strictEqual(normalizeCountryCode("UK"), "GB");
+  assert.strictEqual(normalizeCountryCode("uk"), "GB");
+  assert.strictEqual(normalizeCountryCode("GB"), "GB");
+  assert.strictEqual(normalizeCountryCode("CO"), "CO");
+  assert.deepStrictEqual(extractCityAndCountry("What's the weather in London, UK?"), [
+    { city: "London", country: "GB" },
+  ]);
+});
+
+check("rain, snow, wind, humidity and Spanish heat questions are weather", () => {
+  for (const [text, city] of [
+    ["Is it raining in London?", "London"],
+    ["Is it snowing in Denver?", "Denver"],
+    ["Is it windy in Chicago?", "Chicago"],
+    ["Is it humid in Houston?", "Houston"],
+    ["Do I need an umbrella in Seattle?", "Seattle"],
+    ["¿Hace calor en Miami?", "Miami"],
+    ["¿Está lloviendo en Bogotá?", "Bogotá"],
+  ]) {
+    assert.strictEqual(resolveIntent(text), "weather", text);
+    assert.deepStrictEqual(extractCityAndCountry(text).map((p) => p.city), [city], text);
+  }
+});
+
+check("flight on-time and delay questions are flight status, not time or chat", () => {
+  assert.strictEqual(resolveIntent("Is flight AA100 on time?"), "flight_status");
+  assert.strictEqual(resolveIntent("Is my flight delayed?"), "flight_status");
+  assert.strictEqual(resolveIntent("Has flight UA 1004 landed?"), "flight_status");
+});
+
+check("'Real Madrid' is not the Brazilian real", () => {
+  // Not a currency; and the sports lookup only has live scores, so schedule asks go to chat
+  assert.strictEqual(resolveIntent("When is the next Real Madrid match?"), "chat");
+  assert.strictEqual(resolveIntent("Is Real Madrid playing today?"), "chat");
+  assert.strictEqual(resolveIntent("How much is the Brazilian real in dollars?"), "fx");
+  assert.strictEqual(resolveIntent("Convert 100 reais to dollars"), "fx");
+});
+
+check("upcoming-game questions are chat; live scores stay sports", () => {
+  for (const text of [
+    "When is the next Lakers game?",
+    "When does Barcelona play their next match?",
+    "What's the soccer schedule this weekend?",
+    "Is there an upcoming NFL game on Sunday?",
+  ]) {
+    assert.strictEqual(resolveIntent(text), "chat", text);
+  }
+  assert.strictEqual(resolveIntent("What's the score of the Lakers game?"), "sports");
+  assert.strictEqual(resolveIntent("Who won the game last night?"), "sports");
+  assert.strictEqual(resolveIntent("live football scores"), "sports");
+});
+
+check("stock market hours are a schedule question (chat), not a ticker lookup", () => {
+  assert.strictEqual(resolveIntent("Is the stock market open today?"), "chat");
+  assert.strictEqual(resolveIntent("When does the stock market close?"), "chat");
+  assert.strictEqual(resolveIntent("What is Apple stock at?"), "stocks");
+});
+
 if (process.exitCode) {
   console.log(`\nFAILED — ${passed} checks passed before failure`);
 } else {

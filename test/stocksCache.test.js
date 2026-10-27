@@ -100,5 +100,27 @@ function avResponse(params) {
     assert.strictEqual(second.symbol, "AAPL");
   });
 
+  await check("rate failures never guess a percentage", async () => {
+    for (const reply of [
+      () => ({ data: { Information: "rate limit" } }),
+      () => ({ data: { data: [{ date: "2026-10-01", value: "n/a" }] } }),
+      () => {
+        throw new Error("network down");
+      },
+    ]) {
+      respond = reply;
+      const r = await createStocksService("key", logger).getUsInterestRate();
+      assert.ok(r.error, JSON.stringify(r));
+      assert.ok(!/percent|\d/.test(r.error), r.error);
+    }
+  });
+
+  await check("rate answer states only the looked-up rate", async () => {
+    respond = avResponse;
+    const r = await createStocksService("key", logger).getUsInterestRate();
+    assert.ok(/percent/.test(r.message), r.message);
+    assert.ok(!/often|usually|typically/i.test(r.message), r.message);
+  });
+
   if (!process.exitCode) console.log(`\nAll ${passed} checks passed`);
 })();

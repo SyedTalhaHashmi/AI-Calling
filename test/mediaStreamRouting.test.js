@@ -526,6 +526,65 @@ const weatherCall = (callId, args) => ({
     c.close();
   });
 
+  for (const routerMode of ["tools", "regex"]) {
+    await check(`${routerMode} mode: 'buddy call AI packages' gets the plan list, not "check their website"`, async () => {
+      const c = await startCall({ routerMode });
+      await c.say("can you please let me know the buddy call AI packages");
+      await waitFor(() => c.creates().length === 2);
+      const r = c.creates()[1].response;
+      assert.ok(/^Say the following in English only/.test(r.instructions), r.instructions);
+      assert.ok(/Silver/.test(r.instructions) && /69 dollars/.test(r.instructions), r.instructions);
+      assert.deepStrictEqual(r.tools, []);
+      c.close();
+    });
+  }
+
+  await check("plan list reply is not squeezed into a 20-word sentence", async () => {
+    const c = await startCall({ routerMode: "tools" });
+    await c.say("What are the Buddy Call plans?");
+    await waitFor(() => c.creates().length === 2);
+    const r = c.creates()[1].response;
+    assert.ok(!/15 to 20 words/.test(r.instructions), r.instructions);
+    assert.ok(/every name and number/i.test(r.instructions), r.instructions);
+    c.close();
+  });
+
+  for (const routerMode of ["tools", "regex"]) {
+    await check(`${routerMode} mode: "Do you speak Spanish?" offers in English; "Yes" switches to Spanish`, async () => {
+      const c = await startCall({ routerMode });
+      await c.say("Do you speak Spanish?");
+      await waitFor(() => c.creates().length === 2);
+      const offer = c.creates()[1].response;
+      assert.ok(/^Say the following in English only/.test(offer.instructions), offer.instructions);
+      assert.ok(/Would you like me to switch to Spanish/.test(offer.instructions), offer.instructions);
+      assert.deepStrictEqual(offer.tools, []);
+      await c.completeLast([]);
+      await c.say("Yes");
+      await waitFor(() => c.creates().length === 3);
+      const switched = c.creates()[2].response;
+      assert.ok(/^Say the following in Spanish only/.test(switched.instructions), switched.instructions);
+      c.close();
+    });
+  }
+
+  await check("tools mode: plain 'Yes' with no offer pending is still treated as a backchannel", async () => {
+    const c = await startCall({ routerMode: "tools" });
+    await c.say("Yes");
+    await sleep(150);
+    assert.strictEqual(c.creates().length, 1);
+    c.close();
+  });
+
+  await check("tools mode: 'this call is free or what' gets the fixed billing reply", async () => {
+    const c = await startCall({ routerMode: "tools" });
+    await c.say("this call is free or what");
+    await waitFor(() => c.creates().length === 2);
+    const r = c.creates()[1].response;
+    assert.ok(/buddycallai dot com/.test(r.instructions), r.instructions);
+    assert.deepStrictEqual(r.tools, []);
+    c.close();
+  });
+
   await check("tools mode: hold phrase still gets no reply", async () => {
     const c = await startCall({ routerMode: "tools" });
     await c.say("Let me think for a second.");

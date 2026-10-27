@@ -2,8 +2,36 @@
  * Honest billing / trial answers from session facts (never invent "unlimited free").
  */
 
+/**
+ * Plans and prices — keep in sync with backend/src/lib/plans.js and backend/src/config.js
+ * (DISPLAY_PRICE_*_USD, PAYG_PER_MINUTE_USD, PLATINUM_OVERAGE_PER_MINUTE_USD defaults).
+ */
+const PLAN_CATALOG_REPLY =
+  "BuddyCallAI has Pay-As-You-Go at 59 cents a minute with no monthly fee. " +
+  "Silver is 9 dollars a month for 20 minutes, Gold is 29 dollars a month for 60 minutes, " +
+  "and Platinum is 69 dollars a month for 150 minutes, then 55 cents a minute. " +
+  "You can sign up at buddycallai dot com.";
+const PLAN_CATALOG_FACTS =
+  "Plans (authoritative): Pay-As-You-Go $0.59/min, no monthly fee; Silver $9/month, 20 min; " +
+  "Gold $29/month, 60 min; Platinum $69/month, 150 min then $0.55/min. Sign up at buddycallai.com.";
+
+/** "What are the Buddy Call plans / packages / prices?" — the plan list, not this call's time. */
+function isPlanCatalogQuestion(text) {
+  const t = String(text || "").toLowerCase();
+  const offer = /\b(plans?|packages?|pricing|prices?|costs?|subscriptions?|tiers?|planes|precios?|paquetes?)\b/i;
+  if (/\bbuddy\s*call/i.test(t) && offer.test(t) && !/\b(talking|talk) about\b/i.test(t)) return true;
+  return (
+    /\b(what|which)\s+(plans|packages|subscriptions)\s+do\s+you\s+(have|offer)\b/i.test(t) ||
+    /\bwhat\s+(plans|packages|subscriptions)\s+(are there|are available)\b/i.test(t) ||
+    /\b(your|the buddy\w*)\s+(packages|pricing|prices|subscriptions?)\b/i.test(t)
+  );
+}
+
 function isBillingQuestion(text) {
   const t = String(text || "").toLowerCase();
+  if (isPlanCatalogQuestion(t)) return true;
+  // "this call is free or what" — same ask as "is this call free?"
+  if (/\b(this|the|my)\s+(phone\s+)?call\s+(is\s+)?free\b/i.test(t)) return true;
   // Avoid stealing "how long is the flight" — require plan/free/trial/cost cues
   const hasPlanCue =
     /\b(free|trial|subscribe|subscription|minutes?|unlimited|no charge|pricing|plan|pay|cost|limit|usage)\b/i.test(
@@ -64,9 +92,10 @@ function formatSecondsFriendly(sec) {
 }
 
 /**
- * Fixed spoken answer from session billing fields.
+ * Fixed spoken answer from session billing fields; the plan list when they asked about plans.
  */
-function billingReply(session) {
+function billingReply(session, text = "") {
+  if (isPlanCatalogQuestion(text)) return PLAN_CATALOG_REPLY;
   const mode = session?.billingMode || "legacy";
   const max = session?.maxBillableSeconds;
 
@@ -106,6 +135,11 @@ function billingReply(session) {
 
 /** Extra session instruction so chat path stays honest even without fast path. */
 function billingInstruction(session) {
+  // Plan list too, so follow-ups ("which plan has the most minutes?") are answered from facts
+  return `${sessionBillingFacts(session)} ${PLAN_CATALOG_FACTS}`;
+}
+
+function sessionBillingFacts(session) {
   const mode = session?.billingMode || "legacy";
   const max = session?.maxBillableSeconds;
   if (mode === "trial" && max != null && max > 0) {
@@ -135,6 +169,7 @@ function billingInstruction(session) {
 
 module.exports = {
   isBillingQuestion,
+  isPlanCatalogQuestion,
   billingReply,
   billingInstruction,
   formatSecondsFriendly,

@@ -12,7 +12,7 @@ const FAILED_ERROR = "I couldn't get that right now. Please try again in a momen
 const TOOL_DEFS = {
   get_weather: {
     description:
-      "Get current weather for a city. Always call this for weather/temperature/forecast—never guess. When the user names a country or territory (e.g. Puerto Rico, France), pass it in country and use that country's main city if no city is given. For ambiguous cities (San Juan, London, Paris), country is required. If they ask about two cities (A or B), call once per city.",
+      "Get current weather for a city plus today's and tomorrow's high, low, and chance of rain. Always call this for weather/temperature/rain/forecast—never guess, and answer rain or forecast questions only from today/tomorrow in the result. For later days, say you can only check today and tomorrow. When the user names a country or territory (e.g. Puerto Rico, France), pass it in country and use that country's main city if no city is given. For ambiguous cities (San Juan, London, Paris), country is required. If they ask about two cities (A or B), call once per city.",
     parameters: {
       type: "object",
       properties: {
@@ -59,7 +59,7 @@ const TOOL_DEFS = {
   },
   find_places: {
     description:
-      "Find places: hotels, restaurants/food, or local services (pharmacy, clinic, hospital, dentist). Requires a city or area. Say the short acknowledgement out loud before calling this, like every other tool.",
+      "Find places: hotels, restaurants/food, or local services (pharmacy, clinic, hospital, dentist). Requires a city or area. Say the short acknowledgement out loud before calling this, like every other tool. Results give names, addresses, and ratings only: never say a place is available, bookable, has rooms, or is open.",
     parameters: {
       type: "object",
       properties: {
@@ -75,7 +75,7 @@ const TOOL_DEFS = {
   },
   get_flight_fare: {
     description:
-      "Get the cheapest recently seen airfare between two airports (recent fares, not a live booking quote). Convert city names to IATA airport codes yourself (Bogota→BOG, Miami→MIA, Madrid→MAD). If origin or destination is missing, ask the caller instead of calling.",
+      "Get the cheapest recently seen airfare between two airports (recent fares, not a live booking quote). Convert city names to IATA airport codes yourself (Bogota→BOG, Miami→MIA, Madrid→MAD). If origin or destination is missing, ask the caller instead of calling. The fare is the cheapest across all airlines (it can't be filtered by airline): always say the airline from the result, and if the caller asked for a specific airline and the result is a different one, say this fare is with that other airline, not theirs.",
     parameters: {
       type: "object",
       properties: {

@@ -71,6 +71,39 @@ function meteoHandler(url) {
     assert.strictEqual(requests.filter((r) => r.url.includes("geocoding")).length, 2, "refreshed after a day");
   });
 
+  // The service already downloaded a 7-day forecast and dropped it; "any rain prediction?" was then guessed
+  await check("weather: today's and tomorrow's high, low, and rain chance come from the same request", async () => {
+    requests = [];
+    getHandler = (url) =>
+      url.includes("geocoding")
+        ? meteoHandler(url)
+        : {
+            data: {
+              ...meteoHandler(url).data,
+              daily: {
+                weather_code: [61, 0, 3],
+                temperature_2m_max: [19.4, 21.6, 20],
+                temperature_2m_min: [11.2, 10.5, 9],
+                precipitation_probability_max: [80, 5, 10],
+              },
+            },
+          };
+    const r = await createOpenMeteoService(true, logger).getByCity("Bogota", "CO");
+    assert.deepStrictEqual(r.today, { high: 19, low: 11, rainChance: 80, description: "light rain" });
+    assert.deepStrictEqual(r.tomorrow, { high: 22, low: 11, rainChance: 5, description: "clear sky" });
+    assert.strictEqual(r.temp, 14, "current conditions unchanged");
+    const forecast = requests.find((x) => x.url.includes("forecast"));
+    assert.ok(/precipitation_probability_max/.test(forecast.opts.params.daily), forecast.opts.params.daily);
+    assert.strictEqual(requests.filter((x) => x.url.includes("forecast")).length, 1, "no extra request");
+  });
+
+  await check("weather: missing forecast data leaves today/tomorrow out", async () => {
+    getHandler = meteoHandler;
+    const r = await createOpenMeteoService(true, logger).getByCity("Bogota", "CO");
+    assert.strictEqual(r.today, undefined);
+    assert.strictEqual(r.tomorrow, undefined);
+  });
+
   await check("weather: requests reuse connections", async () => {
     requests = [];
     getHandler = meteoHandler;

@@ -26,6 +26,7 @@ const {
 } = require("../utils/replyLanguage");
 const {
   isBillingQuestion,
+  isPlanCatalogQuestion,
   billingReply,
   billingInstruction,
 } = require("../utils/billingReply");
@@ -540,7 +541,11 @@ function createMediaStreamHandler({
             const langName = languageLabel(sess?.replyLanguage || "en");
             const instruction =
               opts.multilingual !== false
-                ? `Say the following in ${langName} only, one short sentence (15 to 20 words max): ${reply}${/[.?!]$/.test(reply) ? "" : "."}`
+                ? `Say the following in ${langName} only, ${
+                    opts.maxWords
+                      ? `in up to ${opts.maxWords} words, keeping every name and number`
+                      : "one short sentence (15 to 20 words max)"
+                  }: ${reply}${/[.?!]$/.test(reply) ? "" : "."}`
                 : `Say only the quoted sentence, word for word, with no other facts or numbers: "${reply}"`;
             // No tools on fast-path replies — prevents double weather/hotel answers
             openaiWs.send(
@@ -583,13 +588,7 @@ function createMediaStreamHandler({
 
             interruptAgentPlayback();
 
-            if (shouldDeferUserTurn(trimmed)) {
-              logger.info({ callSid, transcript: trimmed }, "Skip turn: user holding floor");
-              metrics.setRoute(turnId, "deferred");
-              metrics.finishWithoutReply(turnId, "deferred");
-              return;
-            }
-
+            // Before the backchannel check: a bare "Yes" may be accepting a language offer
             const langUpdate = updateReplyLanguage(sessionRef, trimmed);
             if (langUpdate.changed) {
               logger.info(
@@ -598,12 +597,33 @@ function createMediaStreamHandler({
               );
               syncSessionInstructions();
             }
+            if (langUpdate.acceptedOffer) {
+              metrics.setRoute(turnId, "language");
+              const name = languageLabel(langUpdate.language);
+              sendReply(`Sure, I'll speak ${name} from now on. How can I help you?`, { multilingual: true });
+              return;
+            }
+            // "Do you speak Spanish?" — answer and offer in the current language; switch only on yes
+            if (langUpdate.offer) {
+              metrics.setRoute(turnId, "language");
+              const name = languageLabel(langUpdate.offer);
+              sendReply(`Yes, I can speak ${name}. Would you like me to switch to ${name}?`, { multilingual: true });
+              return;
+            }
+
+            if (shouldDeferUserTurn(trimmed)) {
+              logger.info({ callSid, transcript: trimmed }, "Skip turn: user holding floor");
+              metrics.setRoute(turnId, "deferred");
+              metrics.finishWithoutReply(turnId, "deferred");
+              return;
+            }
 
             // Honest trial / plan answers — never invent unlimited free time
             if (isBillingQuestion(trimmed)) {
               metrics.setRoute(turnId, "billing");
-              const fact = billingReply(sessionRef);
-              sendReply(fact, { multilingual: true });
+              const fact = billingReply(sessionRef, trimmed);
+              // The plan list runs ~50 words; a 20-word cap would drop plans or prices
+              sendReply(fact, { multilingual: true, maxWords: isPlanCatalogQuestion(trimmed) ? 60 : undefined });
               return;
             }
 

@@ -36,6 +36,21 @@ const WMO_DESC = {
   99: "thunderstorm",
 };
 
+/** Day i of Open-Meteo's daily arrays (0 = today, local to the city); undefined when missing. */
+function dailyForecast(daily, i) {
+  const high = daily?.temperature_2m_max?.[i];
+  const low = daily?.temperature_2m_min?.[i];
+  if (high == null || low == null) return undefined;
+  const code = Number(daily.weather_code?.[i]);
+  const rain = daily.precipitation_probability_max?.[i];
+  return {
+    high: Math.round(Number(high)),
+    low: Math.round(Number(low)),
+    rainChance: rain != null ? Math.round(Number(rain)) : null,
+    description: WMO_DESC[code] || `weather code ${code}`,
+  };
+}
+
 function createOpenMeteoService(enabled, logger, { now } = {}) {
   if (!enabled) {
     return {
@@ -138,7 +153,7 @@ function createOpenMeteoService(enabled, logger, { now } = {}) {
           longitude: place.longitude,
           current:
             "temperature_2m,apparent_temperature,weather_code,wind_speed_10m,relative_humidity_2m",
-          daily: "weather_code,temperature_2m_max,temperature_2m_min",
+          daily: "weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max",
           forecast_days: 7,
           timezone: "auto",
         },
@@ -160,6 +175,9 @@ function createOpenMeteoService(enabled, logger, { now } = {}) {
           ? Math.round(Number(current.relative_humidity_2m))
           : undefined,
         windSpeed: current.wind_speed_10m,
+        // Same request: lets "will it rain later / tomorrow?" be answered instead of guessed
+        today: dailyForecast(weather.data?.daily, 0),
+        tomorrow: dailyForecast(weather.data?.daily, 1),
       };
       return cache.set(cacheKey, result, 2 * 60 * 1000);
     } catch (err) {

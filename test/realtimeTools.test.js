@@ -645,6 +645,32 @@ const ALL_TOOLS = [
     assert.strictEqual(r.marketClock.withinRegularHours, true);
   });
 
+  // Local test call: "and any rain prediction" got "no rain predicted" from the current sky alone
+  await check("weather tool: returns today/tomorrow forecast, nothing later is guessed", async () => {
+    const { services } = stubServices();
+    const w = buildToolDefinitions(services).find((t) => t.name === "get_weather");
+    assert.ok(/today's and tomorrow's/i.test(w.description), w.description);
+    assert.ok(/chance of rain/i.test(w.description), w.description);
+    assert.ok(/only check today and tomorrow/i.test(w.description), w.description);
+  });
+
+  // Local test call: asked for PIA, got a 9P (Fly Jinnah) fare with no airline named
+  await check("fare tool: cheapest across all airlines; say the airline and flag a different one", async () => {
+    const { services } = stubServices();
+    const f = buildToolDefinitions(services).find((t) => t.name === "get_flight_fare");
+    assert.ok(/all airlines/i.test(f.description), f.description);
+    assert.ok(/say the airline/i.test(f.description), f.description);
+    assert.ok(/asked for a specific airline/i.test(f.description), f.description);
+  });
+
+  // Local test call: hotel list was described as "ready for booking"
+  await check("places tool: results never prove availability, booking, or open status", async () => {
+    const { services } = stubServices();
+    const p = buildToolDefinitions(services).find((t) => t.name === "find_places");
+    assert.ok(/names, addresses, and ratings only/i.test(p.description), p.description);
+    assert.ok(/available|bookable/i.test(p.description), p.description);
+  });
+
   await check("other tools' log fields are unchanged", async () => {
     const r = { city: "Miami", temp: 24 };
     assert.deepStrictEqual(toolResultLogFields("get_weather", { city: "Miami" }, r), {

@@ -10,7 +10,9 @@ const {
 } = require("../utils/replyLanguage");
 const {
   isBillingQuestion,
+  isPlanCatalogQuestion,
   billingReply,
+  billingInstruction,
 } = require("../utils/billingReply");
 
 let passed = 0;
@@ -41,33 +43,96 @@ check("Spanish weather locks es", () => {
 
 check("explicit speak English", () => {
   assert.strictEqual(explicitLanguageSwitch("speak in English please"), "en");
-  assert.strictEqual(explicitLanguageSwitch("do you speak English as well?"), "en");
 });
 
-check("do you speak Spanish locks es", () => {
-  assert.strictEqual(explicitLanguageSwitch("Do you speak Spanish?"), "es");
+// Asking whether the agent speaks a language is not asking it to switch (was: switched immediately)
+check("capability questions do not switch the language", () => {
+  for (const t of [
+    "Do you speak Spanish?",
+    "do you speak English as well?",
+    "Can you speak French?",
+    "Do you know Portuguese?",
+    "And he goes, what I know, I want to know if you can speak Yiddish.",
+    "Can you speak Hebrew?",
+  ]) {
+    assert.strictEqual(explicitLanguageSwitch(t), null, t);
+  }
 });
 
-check("Yiddish capability ask locks yi", () => {
-  assert.strictEqual(
-    explicitLanguageSwitch(
-      "And he goes, what I know, I want to know if you can speak Yiddish."
-    ),
-    "yi"
-  );
+check("clear requests still switch at once", () => {
+  assert.strictEqual(explicitLanguageSwitch("Can you speak Spanish please?"), "es");
+  assert.strictEqual(explicitLanguageSwitch("Switch to Spanish"), "es");
+  assert.strictEqual(explicitLanguageSwitch("Let's talk in French"), "fr");
+  assert.strictEqual(explicitLanguageSwitch("Please reply in Hindi"), "hi");
   assert.strictEqual(
     explicitLanguageSwitch(
       "But I want you should speak Yiddish for me, and when you're gonna speak Yiddish for me"
     ),
     "yi"
   );
+});
+
+check("translation questions do not switch the language", () => {
+  for (const t of [
+    "How do you say thank you in Spanish?",
+    "What is good morning in French?",
+    "How would I say hello in Hebrew?",
+    "Translate this into Spanish: where is the bathroom",
+  ]) {
+    assert.strictEqual(explicitLanguageSwitch(t), null, t);
+  }
+});
+
+check("capability question: offer to switch, keep the current language", () => {
   const session = { replyLanguage: "en" };
-  const r = updateReplyLanguage(
-    session,
-    "I want to know if you can speak Yiddish."
-  );
-  assert.strictEqual(session.replyLanguage, "yi");
+  const r = updateReplyLanguage(session, "Do you speak Spanish?");
+  assert.deepStrictEqual(r, { changed: false, language: "en", offer: "es" });
+  assert.strictEqual(session.replyLanguage, "en");
+  assert.strictEqual(session.languageOffer, "es");
+});
+
+check("yes to the offer switches; no or another question keeps the language", () => {
+  for (const answer of ["Yes", "yes please", "Sure.", "Okay", "Sí, por favor", "Yeah, go ahead"]) {
+    const session = { replyLanguage: "en" };
+    updateReplyLanguage(session, "Do you speak Spanish?");
+    const r = updateReplyLanguage(session, answer);
+    assert.deepStrictEqual(r, { changed: true, language: "es", acceptedOffer: true }, answer);
+    assert.strictEqual(session.languageOffer, null);
+  }
+  for (const answer of ["No, English is fine", "No thanks", "What's the weather in Miami?"]) {
+    const session = { replyLanguage: "en" };
+    updateReplyLanguage(session, "Do you speak Spanish?");
+    const r = updateReplyLanguage(session, answer);
+    assert.strictEqual(session.replyLanguage, "en", answer);
+    assert.ok(!r.acceptedOffer, answer);
+    assert.strictEqual(session.languageOffer, null, answer);
+  }
+});
+
+check("after the offer, simply continuing in that language switches", () => {
+  const session = { replyLanguage: "en" };
+  updateReplyLanguage(session, "Do you speak Spanish?");
+  const r = updateReplyLanguage(session, "¿Qué clima hace en Bogotá?");
+  assert.strictEqual(session.replyLanguage, "es");
   assert.strictEqual(r.changed, true);
+});
+
+check("asking about the language already in use makes no offer", () => {
+  const session = { replyLanguage: "en" };
+  const r = updateReplyLanguage(session, "Do you speak English?");
+  assert.strictEqual(r.offer, undefined);
+  assert.ok(!session.languageOffer);
+});
+
+check("Yiddish capability ask offers Yiddish (no immediate switch); asking in Spanish itself still switches", () => {
+  const session = { replyLanguage: "en" };
+  const r = updateReplyLanguage(session, "I want to know if you can speak Yiddish.");
+  assert.strictEqual(r.offer, "yi");
+  assert.strictEqual(session.replyLanguage, "en");
+  // Caller is already speaking Spanish
+  const es = { replyLanguage: "en" };
+  updateReplyLanguage(es, "¿Hablas español?");
+  assert.strictEqual(es.replyLanguage, "es");
 });
 
 check("session: Hello after Spanish stay es", () => {
@@ -87,9 +152,12 @@ check("session: first clear English locks en", () => {
   assert.strictEqual(r.changed, true);
 });
 
-check("session: switch to English on ask", () => {
+check("session: 'do you speak English?' in a Spanish call offers English; yes switches", () => {
   const session = { replyLanguage: "es" };
-  updateReplyLanguage(session, "Okay, do you speak English as well, correct?");
+  const r = updateReplyLanguage(session, "Okay, do you speak English as well, correct?");
+  assert.strictEqual(r.offer, "en");
+  assert.strictEqual(session.replyLanguage, "es");
+  updateReplyLanguage(session, "Yes");
   assert.strictEqual(session.replyLanguage, "en");
 });
 
@@ -147,6 +215,67 @@ check("fallback billing reply is caller-facing (no internal rules spoken)", () =
     assert.ok(!/never assume|never say|do not invent|authoritative/i.test(reply), reply);
     assert.ok(/buddycallai dot com/i.test(reply), reply);
     assert.ok(!/unlimited|no charge|completely free/i.test(reply), reply);
+  }
+});
+
+// Local test call: "this call is free or what" went to chat ("check with your service provider")
+check("'this call is free' word order is billing", () => {
+  assert.ok(isBillingQuestion("this call is free or what"));
+  assert.ok(isBillingQuestion("So this phone call is free?"));
+  assert.ok(isBillingQuestion("the call is free right"));
+});
+
+// Local test call: "Let me know the buddy call AI plan" / "packages" got "check their website"
+check("plan / package / pricing questions about Buddy Call are plan-catalog (and billing) questions", () => {
+  for (const t of [
+    "Let me know the buddy call AI plan.",
+    "can you please let me know the buddy call AI packages",
+    "What are the BuddyCall plans?",
+    "How much does Buddy Call cost?",
+    "What packages do you offer?",
+    "Which plans do you have?",
+    "What's your pricing?",
+    "¿Cuáles son los planes de Buddy Call?",
+  ]) {
+    assert.ok(isPlanCatalogQuestion(t), t);
+    assert.ok(isBillingQuestion(t), t);
+  }
+});
+
+check("other plans, prices, and packages are not plan-catalog questions", () => {
+  for (const t of [
+    "What's the plan for today?",
+    "Can you plan my trip to Miami?",
+    "What are your plans for the weekend?",
+    "What's the price of a flight to Lahore?",
+    "Track my package from Amazon",
+    "I am talking about Buddy Call AI.",
+  ]) {
+    assert.ok(!isPlanCatalogQuestion(t), t);
+  }
+  assert.ok(!isBillingQuestion("Track my package from Amazon"));
+  assert.ok(!isBillingQuestion("What's the price of a flight to Lahore?"));
+});
+
+check("plan-catalog reply lists every plan with its price and minutes (matches backend plans)", () => {
+  for (const session of [undefined, { billingMode: "trial", maxBillableSeconds: 60 }, { billingMode: "subscriber", maxBillableSeconds: 600 }]) {
+    const reply = billingReply(session, "What are the Buddy Call plans?");
+    for (const part of [/Pay-As-You-Go/, /59 cents a minute/, /Silver/, /9 dollars a month/, /20 minutes/, /Gold/, /29 dollars/, /60 minutes/, /Platinum/, /69 dollars/, /150 minutes/, /55 cents a minute/, /buddycallai dot com/]) {
+      assert.ok(part.test(reply), `${part} missing: ${reply}`);
+    }
+  }
+});
+
+check("non-catalog billing questions keep their existing reply", () => {
+  const session = { billingMode: "trial", maxBillableSeconds: 60 };
+  assert.strictEqual(billingReply(session, "Is this call free?"), billingReply(session));
+  assert.ok(!/Platinum/.test(billingReply(session, "Is this call free?")));
+});
+
+check("session billing facts include the plan list for follow-ups", () => {
+  for (const session of [undefined, { billingMode: "trial", maxBillableSeconds: 60 }, { billingMode: "subscriber_platinum" }]) {
+    const text = billingInstruction(session);
+    assert.ok(/Silver/.test(text) && /\$29/.test(text) && /\$0\.55/.test(text), text);
   }
 });
 

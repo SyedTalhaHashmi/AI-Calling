@@ -175,8 +175,13 @@ function isWeatherQuestion(text) {
   return keywords.some((k) => hasPhrase(t, k));
 }
 
+// "What time does the pharmacy open?" asks about a schedule, not the clock.
+const SCHEDULE_TIME_RE =
+  /\bwhat time (?:do(?! you have\b)|does|did|will|would|should|can|could|are|is (?!it\b|now\b))\b/i;
+
 function isTimeQuestion(text) {
   const t = (text || "").toLowerCase();
+  if (SCHEDULE_TIME_RE.test(t)) return false;
   return (
     /\b(time|what time|current time|what's the time|timezone|what time is it)\b/i.test(t) ||
     /time\s+in\s+/i.test(t)

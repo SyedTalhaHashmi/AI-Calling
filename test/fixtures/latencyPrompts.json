@@ -10,6 +10,7 @@
     { "id": "time-4", "category": "time", "lang": "en", "text": "What time is it in Madrid?" },
     { "id": "time-5", "category": "time", "lang": "en", "text": "What time is it?" },
     { "id": "time-6", "category": "time_followup", "lang": "en", "text": "Bogota." },
+    { "id": "hours-1", "category": "chat_hours", "lang": "en", "text": "What time does the pharmacy open?" },
     { "id": "news-1", "category": "news", "lang": "en", "text": "What's the latest news?" },
     { "id": "news-2", "category": "news", "lang": "en", "text": "Give me the latest news from Colombia." },
     { "id": "fx-1", "category": "fx", "lang": "en", "text": "What's the exchange rate from USD to COP?" },

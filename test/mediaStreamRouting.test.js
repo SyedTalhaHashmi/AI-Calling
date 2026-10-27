@@ -227,6 +227,17 @@ const weatherCall = (callId, args) => ({
     c.close();
   });
 
+  await check("regex mode: business-hours question goes to normal chat, not the time handler", async () => {
+    const c = await startCall({ routerMode: "regex" });
+    await c.say("What time does the pharmacy open?");
+    await waitFor(() => c.creates().length === 2);
+    const r = c.creates()[1].response;
+    assert.ok(/^Reply in English only/.test(r.instructions), r.instructions);
+    assert.ok(!/Which city/i.test(r.instructions), r.instructions);
+    assert.deepStrictEqual(c.calls, [], "no time lookup");
+    c.close();
+  });
+
   await check("tools mode: session offers existing-service tools + tool rules", async () => {
     const c = await startCall({ routerMode: "tools" });
     const upd = c.received.find((m) => m.type === "session.update");

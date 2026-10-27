@@ -116,6 +116,38 @@ check("is it hot in Miami is weather", () => {
   assert.strictEqual(resolveIntent("is it hot in Miami today?"), "weather");
 });
 
+check("schedule questions are not clock lookups (what time does X open)", () => {
+  for (const text of [
+    "What time does the pharmacy open?",
+    "What time does the store close?",
+    "What time do you open?",
+    "What time does the museum open in Madrid?",
+  ]) {
+    assert.notStrictEqual(resolveIntent(text), "time", text);
+  }
+});
+
+check("pharmacy hours with a city stay a pharmacy lookup", () => {
+  assert.strictEqual(resolveIntent("What time does the pharmacy in Bogota open?"), "local_service");
+});
+
+check("genuine clock questions stay time", () => {
+  for (const text of [
+    "What time is it?",
+    "What time is it in Bogota?",
+    "what time is it now in Tokyo",
+    "What time is now in Bogota?",
+    "Time in Tokyo",
+    "What's the time in Madrid right now?",
+    "current time in London",
+    "What time zone is Bogota in?",
+    "Tell me the time in New York",
+    "what time do you have in Tokyo",
+  ]) {
+    assert.strictEqual(resolveIntent(text), "time", text);
+  }
+});
+
 if (process.exitCode) {
   console.log(`\nFAILED — ${passed} checks passed before failure`);
 } else {

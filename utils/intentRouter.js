@@ -9,6 +9,7 @@ const {
   normalizeCountryCode,
   defaultCityForCountry,
 } = require("./placeResolve");
+const { isCurrencyCode } = require("./currencyCodes");
 
 /** Common English words that look like IATA but must never be used as airports. */
 const IATA_STOPWORDS = new Set(
@@ -430,10 +431,8 @@ function extractFlightNumber(text) {
 }
 
 function extractCurrencies(text) {
-  const symbols = String(text || "")
-    .toUpperCase()
-    .match(/\b[A-Z]{3}\b/g);
-  if (!symbols || symbols.length < 2) return { base: null, quote: null };
+  const symbols = (String(text || "").toUpperCase().match(/\b[A-Z]{3}\b/g) || []).filter(isCurrencyCode);
+  if (symbols.length < 2) return { base: null, quote: null };
   return { base: symbols[0], quote: symbols[1] };
 }
 

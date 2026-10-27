@@ -122,6 +122,17 @@ const TOOL_DEFS = {
     description: "Get the latest U.S. Federal Funds interest rate.",
     parameters: { type: "object", properties: {} },
   },
+  web_search: {
+    description:
+      "Search the web for a live or recent fact when no other tool covers it (gas prices, whether a place or airport is open today, event dates, recent results), or when the matching tool just failed. Call at most once per question. Never use it for questions about this call's cost, billing, minutes, or plan.",
+    parameters: {
+      type: "object",
+      properties: {
+        query: { type: "string", description: "Short English search query, e.g. gas price Miami today" },
+      },
+      required: ["query"],
+    },
+  },
 };
 
 /** Which existing service backs each tool (tool offered only when enabled). */
@@ -147,6 +158,8 @@ function toolEnabled(name, s) {
     case "get_stock_quote":
     case "get_us_interest_rate":
       return Boolean(s.stocksService?.enabled);
+    case "web_search":
+      return Boolean(s.webSearchService?.enabled);
     default:
       return false;
   }
@@ -268,6 +281,12 @@ function createToolExecutor({ services, logger, deadlineMs = 2500 }) {
     get_us_interest_rate() {
       return s.stocksService.getUsInterestRate();
     },
+
+    web_search(args) {
+      const query = String(args.query || "").trim();
+      if (!query) return { error: "What should I search for?" };
+      return s.webSearchService.search(query);
+    },
   };
 
   /** Resolves to the service result or an { error } object — never throws. */
@@ -334,14 +353,20 @@ const TOOLS_SESSION_RULES = [
   "- Before calling any tool (including hotel, restaurant, and place searches), say one very short acknowledgement (3 to 6 words, like \"Let me check that.\") in the caller's language. This replaces the earlier rule against saying \"let me check\".",
   "- Plain \"pesos\" means Colombian pesos (COP) unless the caller names another country.",
   "- For general knowledge, answer directly without tools.",
+  "- Never state live or changing facts (whether a place, airport, road, or service is open or closed today, current prices, schedules, today's events) unless they came from a tool result for this question. If no tool covers it, say you can't check that live right now and suggest where to check.",
+  "- Only call a tool that matches the question. Never call an unrelated tool (for example, weather for a gas price question).",
   "- Never use tools for questions about this call's cost, free time, minutes, or plan.",
 ].join("\n");
+
+/** Added to the session rules only when the web_search tool is offered. */
+const WEB_SEARCH_SESSION_RULE =
+  "- If no other tool covers a live question, or the matching tool failed, call web_search once with a short English query. Answer only from its results and mention the source briefly.";
 
 function toolsTurnInstruction(langName) {
   return (
     `Reply in ${langName} only. About 15–25 words. ` +
     `If their latest request needs live data (weather, time, news, exchange rates, places, flight fares or status, sports scores, crypto, stocks, U.S. interest rates), ` +
-    `first say one very short acknowledgement like "Let me check that." and then call the matching tool. Do this for every tool, including hotel, restaurant, and place searches. Never guess live numbers. ` +
+    `first say one very short acknowledgement like "Let me check that." and then call the matching tool. Do this for every tool, including hotel, restaurant, and place searches. Never guess live numbers, and never state live facts (open or closed today, prices, schedules) without a tool result. ` +
     `Otherwise answer from general knowledge (like ChatGPT). If you cannot complete an action (browse, open links, transfer), still help with a clear website or search tip plus what you can do next. ` +
     `Answer only their latest request.`
   );
@@ -350,7 +375,8 @@ function toolsTurnInstruction(langName) {
 function toolsFollowUpInstruction(langName) {
   return (
     `Reply in ${langName} only. Answer their latest request using only the tool results just returned, in one or two short sentences (15–25 words). ` +
-    `Do not repeat the acknowledgement. Never guess live numbers: if a result has an error, say you couldn't get it and suggest what they can try next.`
+    `Do not repeat the acknowledgement. Never guess live numbers: if a result has an error, say you couldn't get it and suggest what they can try next. ` +
+    `State only facts that appear in the results. If the results don't answer the question (for example, a place listing doesn't say whether it is open), say you couldn't confirm that.`
   );
 }
 
@@ -401,6 +427,7 @@ module.exports = {
   fetchWeatherForPlace,
   fetchWeatherForPlaces,
   TOOLS_SESSION_RULES,
+  WEB_SEARCH_SESSION_RULE,
   toolsTurnInstruction,
   toolsFollowUpInstruction,
 };

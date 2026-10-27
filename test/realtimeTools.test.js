@@ -14,6 +14,8 @@ const {
   parseRouterMode,
   parseToolDeadlineMs,
   toolChoiceAgreement,
+  TOOLS_SESSION_RULES,
+  WEB_SEARCH_SESSION_RULE,
 } = require("../handlers/realtimeTools");
 
 let passed = 0;
@@ -380,6 +382,65 @@ const ALL_TOOLS = [
     assert.strictEqual(toolChoiceAgreement("chat", ["get_news"]), "model_used_tool");
     assert.strictEqual(toolChoiceAgreement("fx", []), "model_skipped_tool");
     assert.strictEqual(toolChoiceAgreement("fx", ["get_crypto_price"]), "different_tool");
+  });
+
+  const webSearchStub = (calls, result = { results: [{ title: "T", source: "s.com", snippet: "x" }] }) => ({
+    enabled: true,
+    search: (q) => {
+      calls.push(["webSearch.search", q]);
+      return Promise.resolve(result);
+    },
+  });
+
+  await check("web_search is not offered unless the web search service is enabled", async () => {
+    const { services } = stubServices({ webSearchService: { enabled: false } });
+    assert.ok(!buildToolDefinitions(services).some((t) => t.name === "web_search"));
+  });
+
+  await check("web_search is offered when enabled, as the fallback, never for billing", async () => {
+    const { services, calls } = stubServices();
+    services.webSearchService = webSearchStub(calls);
+    const def = buildToolDefinitions(services).find((t) => t.name === "web_search");
+    assert.ok(def, "web_search offered");
+    assert.deepStrictEqual(def.parameters.required, ["query"]);
+    assert.ok(/no other tool/i.test(def.description), def.description);
+    assert.ok(/(billing|minutes|plan)/i.test(def.description), def.description);
+  });
+
+  await check("web_search runs the search service with the model's query", async () => {
+    const { services, calls } = stubServices();
+    services.webSearchService = webSearchStub(calls);
+    const ex = createToolExecutor({ services, logger });
+    const r = await ex.execute("web_search", { query: "gas price Miami today" });
+    assert.deepStrictEqual(calls, [["webSearch.search", "gas price Miami today"]]);
+    assert.strictEqual(r.results.length, 1);
+  });
+
+  await check("web_search with no query asks instead of searching", async () => {
+    const { services, calls } = stubServices();
+    services.webSearchService = webSearchStub(calls);
+    const ex = createToolExecutor({ services, logger });
+    const r = await ex.execute("web_search", {});
+    assert.ok(r.error);
+    assert.deepStrictEqual(calls, []);
+  });
+
+  await check("tools rules forbid stating unchecked live facts and unrelated tools", async () => {
+    assert.ok(/never state live/i.test(TOOLS_SESSION_RULES), TOOLS_SESSION_RULES);
+    assert.ok(/open or closed/i.test(TOOLS_SESSION_RULES));
+    assert.ok(/unrelated tool/i.test(TOOLS_SESSION_RULES));
+    assert.ok(/never state live/i.test(toolsTurnInstruction("English")));
+  });
+
+  await check("follow-up answer may only state facts in the results (a place listing doesn't prove it's open)", async () => {
+    const f = toolsFollowUpInstruction("English");
+    assert.ok(/only facts that appear in the results/i.test(f), f);
+    assert.ok(/couldn't confirm/i.test(f), f);
+  });
+
+  await check("web search session rule names the tool and is separate from the base rules", async () => {
+    assert.ok(/web_search/.test(WEB_SEARCH_SESSION_RULE));
+    assert.ok(!/web_search/.test(TOOLS_SESSION_RULES));
   });
 
   console.log(`\n${process.exitCode ? "Some checks failed" : `All ${passed} checks passed`}`);

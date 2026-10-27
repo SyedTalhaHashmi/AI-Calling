@@ -19,6 +19,7 @@ const createFxService = require("./services/fx");
 const createSportsService = require("./services/sports");
 const createFlightsService = require("./services/flights");
 const createStocksService = require("./services/stocks");
+const createWebSearchService = require("./services/webSearch");
 const createPlatformApi = require("./services/platformApi");
 const createMediaStreamHandler = require("./handlers/mediaStream");
 const twilio = require("twilio");
@@ -94,6 +95,12 @@ function buildServer() {
   const sportsService = createSportsService(config.apiFootball.apiKey, logger);
   const flightsService = createFlightsService(config.aviationstack.apiKey, logger);
   const stocksService = createStocksService(config.alphavantage.apiKey, logger);
+  const webSearchService = createWebSearchService({
+    apiKey: config.webSearch.exaApiKey,
+    enabled: config.webSearch.enabled,
+    dailyLimit: config.webSearch.dailyLimit,
+    logger,
+  });
   const handleMediaStream = createMediaStreamHandler({
     callStore,
     logger,
@@ -109,6 +116,7 @@ function buildServer() {
     sportsService,
     flightsService,
     stocksService,
+    webSearchService,
     twilioClient: twilioVoiceClient,
     latencyMetricsEnabled: config.latencyMetricsEnabled,
     routerMode: config.routerMode,

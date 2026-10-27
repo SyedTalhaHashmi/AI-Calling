@@ -45,9 +45,18 @@ class FakeTwilio extends EventEmitter {
   }
 }
 
-function stubServices({ weatherDelayMs = 0 } = {}) {
+function stubServices({ weatherDelayMs = 0, webSearch = false, fxError = false } = {}) {
   const calls = [];
   const services = {
+    webSearchService: webSearch
+      ? {
+          enabled: true,
+          search: async (q) => {
+            calls.push(["webSearch", q]);
+            return { results: [{ title: "T", source: "s.com", snippet: "x" }] };
+          },
+        }
+      : { enabled: false },
     weatherService: { enabled: true, getByCity: async () => ({ temp: 1 }) },
     openMeteoService: {
       enabled: true,
@@ -68,7 +77,13 @@ function stubServices({ weatherDelayMs = 0 } = {}) {
     placesService: { enabled: false },
     travelService: { enabled: false },
     newsService: { enabled: false },
-    fxService: { enabled: false },
+    fxService: fxError
+      ? {
+          enabled: true,
+          parsePairFromUtterance: () => ({ base: null, quote: null }),
+          getRate: async () => ({ error: "Could not fetch exchange rate." }),
+        }
+      : { enabled: false },
     sportsService: { enabled: false, detectSport: () => "football" },
     flightsService: { enabled: false },
     stocksService: {
@@ -85,7 +100,7 @@ function stubServices({ weatherDelayMs = 0 } = {}) {
 }
 
 /** Starts a call against a fake Realtime server; greeting already completed. */
-async function startCall({ routerMode, weatherDelayMs } = {}) {
+async function startCall({ routerMode, weatherDelayMs, webSearch, fxError } = {}) {
   const server = new WebSocket.Server({ port: 0 });
   await new Promise((r) => server.on("listening", r));
   const received = [];
@@ -95,7 +110,7 @@ async function startCall({ routerMode, weatherDelayMs } = {}) {
     ws.on("message", (d) => received.push(JSON.parse(d.toString())));
   });
 
-  const { services, calls } = stubServices({ weatherDelayMs });
+  const { services, calls } = stubServices({ weatherDelayMs, webSearch, fxError });
   const handler = createMediaStreamHandler({
     callStore: new CallStore(),
     logger: silent,
@@ -250,6 +265,61 @@ const weatherCall = (callId, args) => ({
       "get_weather",
     ]);
     assert.ok(/Live data tools/.test(upd.session.instructions));
+    assert.ok(!/web_search/.test(upd.session.instructions), "no web search rule when search is off");
+    c.close();
+  });
+
+  await check("tools mode + web search enabled: session offers web_search and its rule", async () => {
+    const c = await startCall({ routerMode: "tools", webSearch: true });
+    const upd = c.received.find((m) => m.type === "session.update");
+    assert.ok(upd.session.tools.some((t) => t.name === "web_search"));
+    assert.ok(/web_search/.test(upd.session.instructions));
+    c.close();
+  });
+
+  await check("tools mode: model's web_search call runs the search and returns its output", async () => {
+    const c = await startCall({ routerMode: "tools", webSearch: true });
+    await c.say("What's the price of gas in Miami today?");
+    await waitFor(() => c.creates().length === 2);
+    await c.completeLast([
+      { type: "function_call", name: "web_search", call_id: "ws1", arguments: JSON.stringify({ query: "gas price Miami today" }) },
+    ]);
+    await waitFor(() => c.creates().length === 3);
+    assert.deepStrictEqual(c.calls, [["webSearch", "gas price Miami today"]]);
+    const out = c.received.find((m) => m.type === "conversation.item.create" && m.item?.call_id === "ws1");
+    assert.ok(/s\.com/.test(out.item.output), out.item.output);
+    c.close();
+  });
+
+  await check("regex mode: normal chat turn forbids unchecked live facts", async () => {
+    const c = await startCall({ routerMode: "regex" });
+    await c.say("Is the Bogota airport open today?");
+    await waitFor(() => c.creates().length === 2);
+    const r = c.creates()[1].response;
+    assert.ok(/^Reply in English only/.test(r.instructions), r.instructions);
+    assert.ok(/never state live/i.test(r.instructions), r.instructions);
+    c.close();
+  });
+
+  await check("regex mode: a failed lookup is said as-is, with no added numbers", async () => {
+    const c = await startCall({ routerMode: "regex", fxError: true });
+    await c.say("What's the exchange rate from USD to COP?");
+    await waitFor(() => c.creates().length === 2);
+    const r = c.creates()[1].response;
+    // Spoken text is quoted; the guard sits outside the quotes so it is never read aloud
+    assert.ok(/"Could not fetch exchange rate\."/.test(r.instructions), r.instructions);
+    assert.ok(/^Say only the quoted sentence/.test(r.instructions), r.instructions);
+    assert.ok(/no other facts or numbers/i.test(r.instructions.split('"')[0]), r.instructions);
+    c.close();
+  });
+
+  await check("regex mode with web search enabled: never offered, never called", async () => {
+    const c = await startCall({ routerMode: "regex", webSearch: true });
+    const upd = c.received.find((m) => m.type === "session.update");
+    assert.deepStrictEqual(upd.session.tools.map((t) => t.name), ["get_weather"]);
+    await c.say("What's the price of gas in Miami today?");
+    await waitFor(() => c.creates().length === 2);
+    assert.deepStrictEqual(c.calls, []);
     c.close();
   });
 

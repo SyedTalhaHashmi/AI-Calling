@@ -38,6 +38,7 @@ const {
   fetchWeatherForPlace,
   fetchWeatherForPlaces,
   TOOLS_SESSION_RULES,
+  WEB_SEARCH_SESSION_RULE,
   toolsTurnInstruction,
   toolsFollowUpInstruction,
   toolChoiceAgreement,
@@ -52,7 +53,7 @@ const GREETING = "Hi! I'm Buddy, your AI friend. Ask me anything you want.";
 // Friendly voice: marin (female); alternatives: coral, shimmer, sage
 const VOICE = "marin";
 
-function buildRealtimeInstructions(session, { toolsMode = false } = {}) {
+function buildRealtimeInstructions(session, { toolsMode = false, webSearch = false } = {}) {
   const parts = [
     SYSTEM_PROMPT,
     "",
@@ -61,6 +62,7 @@ function buildRealtimeInstructions(session, { toolsMode = false } = {}) {
     billingInstruction(session),
   ];
   if (toolsMode) parts.push("", TOOLS_SESSION_RULES);
+  if (toolsMode && webSearch) parts.push(WEB_SEARCH_SESSION_RULE);
   return parts.join("\n");
 }
 
@@ -188,6 +190,8 @@ function createMediaStreamHandler({
   sportsService,
   flightsService,
   stocksService,
+  /** Tools mode only (never offered or called by the regex router). */
+  webSearchService,
   twilioClient,
   latencyMetricsEnabled = true,
   /** "regex" (default, existing fast paths) or "tools" (model picks existing-service tools). */
@@ -208,8 +212,10 @@ function createMediaStreamHandler({
     sportsService,
     flightsService,
     stocksService,
+    webSearchService,
   };
   const toolDefinitions = toolsMode ? buildToolDefinitions(toolServices) : [];
+  const webSearchOffered = toolDefinitions.some((t) => t.name === "web_search");
   const toolExecutor = toolsMode
     ? createToolExecutor({ services: toolServices, logger, deadlineMs: toolDeadlineMs })
     : null;
@@ -449,7 +455,7 @@ function createMediaStreamHandler({
           }
           const session = {
             type: "realtime",
-            instructions: buildRealtimeInstructions(billSession, { toolsMode }),
+            instructions: buildRealtimeInstructions(billSession, { toolsMode, webSearch: webSearchOffered }),
             audio: {
               input: REALTIME_INPUT_AUDIO,
               output: {
@@ -500,7 +506,7 @@ function createMediaStreamHandler({
             const sess = callStore.get(callSid);
             const payload = {
               type: "realtime",
-              instructions: buildRealtimeInstructions(sess, { toolsMode }),
+              instructions: buildRealtimeInstructions(sess, { toolsMode, webSearch: webSearchOffered }),
               ...sessionToolFields(),
             };
             openaiWs.send(
@@ -519,7 +525,7 @@ function createMediaStreamHandler({
             const instruction =
               opts.multilingual !== false
                 ? `Say the following in ${langName} only, one short sentence (15 to 20 words max): ${reply}.`
-                : `Say exactly: ${reply}`;
+                : `Say only the quoted sentence, word for word, with no other facts or numbers: "${reply}"`;
             // No tools on fast-path replies — prevents double weather/hotel answers
             openaiWs.send(
               JSON.stringify(
@@ -891,7 +897,7 @@ function createMediaStreamHandler({
                 JSON.stringify(
                   createResponsePayload(
                     {
-                      instructions: `Reply in ${langName} only. About 15–25 words. Answer from general knowledge when you can (like ChatGPT). If you cannot complete an action (browse, open links, transfer), still help with a clear website or search tip plus what you can do next. Answer only their latest request.`,
+                      instructions: `Reply in ${langName} only. About 15–25 words. Answer from general knowledge when you can (like ChatGPT). Never state live or changing facts (whether a place or airport is open today, current prices, schedules, today's events): say you can't check that live right now and suggest where to check. If you cannot complete an action (browse, open links, transfer), still help with a clear website or search tip plus what you can do next. Answer only their latest request.`,
                       tools: [],
                     },
                     turnId

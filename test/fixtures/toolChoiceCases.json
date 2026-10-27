@@ -1,5 +1,5 @@
 {
-  "description": "Expected tool choice in ROUTER_MODE=tools. expect = tool names the model should call on its first round ([] = answer directly). args = partial match on the first call's arguments (case-insensitive strings). Billing and hold phrases never reach the model in tools mode, so they are not listed.",
+  "description": "Expected tool choice in ROUTER_MODE=tools. expect = tool names the model should call on its first round ([] = answer directly). args = partial match on the first call's arguments (case-insensitive strings). expectNoWeb = expected choice when web_search is not offered (--no-web-search). noClaim = regex a no-tool answer must not match (an unchecked live fact). Billing and hold phrases never reach the model in tools mode, so they are not listed.",
   "cases": [
     { "id": "weather-1", "lang": "en", "text": "What's the weather in Bogota right now?", "expect": ["get_weather"], "args": { "city": "bogot" } },
     { "id": "weather-2", "lang": "en", "text": "Is it hot in Miami or Orlando today?", "expect": ["get_weather", "get_weather"] },
@@ -24,6 +24,13 @@
     { "id": "chat-1", "lang": "en", "text": "Tell me a fun fact about octopuses.", "expect": [] },
     { "id": "chat-2", "lang": "en", "text": "How do I make a good cup of coffee?", "expect": [] },
     { "id": "chat-3", "lang": "en", "text": "Who wrote One Hundred Years of Solitude?", "expect": [] },
+    { "id": "chat-4", "lang": "en", "text": "Who was the first president of Colombia?", "expect": [] },
+    { "id": "live-1", "lang": "en", "text": "What's the price of gas in Miami today?", "expect": ["web_search"], "expectNoWeb": [], "noClaim": "\\$\\s?\\d|\\d+(\\.\\d+)?\\s*(dollars|per gallon)" },
+    { "id": "live-2", "lang": "en", "text": "Is the Bogota airport open today?", "expect": ["web_search"], "expectNoWeb": [], "noClaim": "\\byes\\b.*\\bopen\\b|operating (as usual|normally)" },
+    { "id": "live-3", "lang": "en", "text": "Is the Louvre open today?", "expect": ["web_search"], "expectNoWeb": [], "noClaim": "\\byes\\b.*\\bopen\\b|open today from" },
+    { "id": "live-4", "lang": "en", "text": "When is the next Colombia national team match?", "expect": ["web_search"], "expectNoWeb": [], "noClaim": "\\b(on|this) (monday|tuesday|wednesday|thursday|friday|saturday|sunday)\\b|\\b(january|february|march|april|may|june|july|august|september|october|november|december) \\d" },
+    { "id": "hours-1", "lang": "en", "text": "What time does the pharmacy open?", "expect": [], "noClaim": "\\bopens at \\d" },
+    { "id": "es-live-1", "lang": "es", "text": "¿Cuánto cuesta la gasolina en Bogotá hoy?", "expect": ["web_search"], "expectNoWeb": [], "noClaim": "\\$\\s?\\d|\\d+[.,]?\\d*\\s*(pesos|por gal)" },
     { "id": "es-weather-1", "lang": "es", "text": "¿Cómo está el clima en Medellín?", "expect": ["get_weather"], "args": { "city": "medell" } },
     { "id": "es-fx-1", "lang": "es", "text": "¿Cuántos pesos colombianos es un dólar?", "expect": ["get_exchange_rate"], "args": { "base": "usd", "quote": "cop" } },
     { "id": "es-travel-1", "lang": "es", "text": "¿Cuánto cuesta un tiquete de Bogotá a Miami?", "expect": ["get_flight_fare"], "args": { "origin": "bog", "destination": "mia" } },

@@ -35,6 +35,9 @@ const {
   createToolExecutor,
   collectFunctionCalls,
   runToolCalls,
+  toolResultLogFields,
+  carriedOverPlace,
+  askForPlace,
   fetchWeatherForPlace,
   fetchWeatherForPlaces,
   TOOLS_SESSION_RULES,
@@ -232,7 +235,7 @@ function createMediaStreamHandler({
   return function handleMediaStream(twilioWs, req) {
     /** Logging-only latency metrics; never affects call flow. */
     const metrics = createTurnMetrics({ logger, enabled: latencyMetricsEnabled });
-    /** Tools mode: client_gen of a model turn → { turnId, regexIntent, rounds }. */
+    /** Tools mode: client_gen of a model turn → { turnId, regexIntent, rounds, callerText, earlierCallerTexts, webSearch }. */
     const toolTurns = new Map();
     /** Bumped whenever the caller starts speaking; stale tool results are not spoken. */
     let userSpeechSeq = 0;
@@ -322,6 +325,16 @@ function createMediaStreamHandler({
       (async () => {
         const outputs = await runToolCalls(calls, toolExecutor, {
           timed: (label, fn) => metrics.time(metricsTurnId, label, fn),
+          // A city from an earlier request is not searched unless the caller is continuing that topic
+          guard: (name, args) => {
+            const place = carriedOverPlace(name, args, {
+              latest: toolTurn?.callerText || "",
+              earlier: toolTurn?.earlierCallerTexts || [],
+            });
+            if (!place) return null;
+            logger.info({ callSid, tool: name, place }, "Tool not run: place only named in an earlier request");
+            return askForPlace(place);
+          },
         });
         if (!openaiWs || openaiWs.readyState !== WebSocket.OPEN) return;
         for (const o of outputs) {
@@ -331,7 +344,7 @@ function createMediaStreamHandler({
               item: { type: "function_call_output", call_id: o.call_id, output: o.output },
             })
           );
-          logger.info({ callSid, tool: o.name, args: o.args, result: o.result }, "Tool result");
+          logger.info({ callSid, tool: o.name, ...toolResultLogFields(o.name, o.args, o.result) }, "Tool result");
         }
         metrics.onToolResultsSent(metricsTurnId);
 
@@ -346,13 +359,16 @@ function createMediaStreamHandler({
           return;
         }
         const langName = languageLabel(callStore.get(callSid)?.replyLanguage || "en");
-        const fields = { instructions: toolsFollowUpInstruction(langName) };
+        // Web results earlier in this turn still need source / conflict handling in a later round
+        const webSearch = Boolean(toolTurn?.webSearch) || outputs.some((o) => o.name === "web_search");
+        const fields = { instructions: toolsFollowUpInstruction(langName, { webSearch }) };
         // Cap tool rounds: last follow-up must speak, not call more tools
         if (rounds >= MAX_TOOL_ROUNDS) fields.tools = [];
         const payload = createResponsePayload(fields, metricsTurnId);
         toolTurns.set(String(payload.response.metadata.client_gen), {
           ...(toolTurn || { regexIntent: null }),
           rounds,
+          webSearch,
         });
         openaiWs.send(JSON.stringify(payload));
       })().catch((err) => {
@@ -607,10 +623,16 @@ function createMediaStreamHandler({
                 { instructions: toolsTurnInstruction(langName) },
                 turnId
               );
+              const callerTexts = transcriptLines
+                .filter((l) => l.startsWith("Caller: "))
+                .map((l) => l.slice("Caller: ".length));
               toolTurns.set(String(payload.response.metadata.client_gen), {
                 turnId,
                 regexIntent,
                 rounds: 0,
+                // For the location guard (this request vs earlier ones)
+                callerText: trimmed,
+                earlierCallerTexts: callerTexts.slice(0, -1),
               });
               openaiWs.send(JSON.stringify(payload));
               return;

@@ -124,11 +124,16 @@ const TOOL_DEFS = {
   },
   web_search: {
     description:
-      "Search the web for a live or recent fact when no other tool covers it (gas prices, whether a place or airport is open today, event dates, recent results), or when the matching tool just failed. Call at most once per question. Never use it for questions about this call's cost, billing, minutes, or plan.",
+      "Search the web for a live or recent fact when no other tool covers it (gas prices, whether a place or airport is open today, event dates, recent results), or when the matching tool just failed. Call at most once per question. Never use it for questions about this call's cost, billing, minutes, or plan. " +
+      "If the answer depends on a place (store hours, local prices) and the caller's latest request didn't name one, don't call this yet: ask which city first. Don't copy a city from earlier questions unless they say \"there\" or clearly mean the same place.",
     parameters: {
       type: "object",
       properties: {
-        query: { type: "string", description: "Short English search query, e.g. gas price Miami today" },
+        query: {
+          type: "string",
+          description:
+            "Short English search query, e.g. gas price <city> today. Include a city or place only if the caller named it (now, or earlier when clearly continuing that topic).",
+        },
       },
       required: ["query"],
     },
@@ -198,7 +203,93 @@ function isValidTimeZone(tz) {
   }
 }
 
-function createToolExecutor({ services, logger, deadlineMs = 2500 }) {
+/** Market-status questions ("is the stock market open?"), not price lookups. */
+const MARKET_STATUS_QUERY = /\b(stock markets?|stock exchange|nyse|nasdaq|wall street|dow jones)\b/i;
+
+/** NYSE/Nasdaq regular session from the clock alone (Mon–Fri 9:30 AM–4:00 PM ET; holidays unknown). */
+function marketClock(now) {
+  const d = new Date(now);
+  const p = Object.fromEntries(
+    new Intl.DateTimeFormat("en-US", {
+      timeZone: "America/New_York",
+      weekday: "long",
+      hour: "numeric",
+      minute: "2-digit",
+      hourCycle: "h23",
+    })
+      .formatToParts(d)
+      .map((x) => [x.type, x.value])
+  );
+  const minutes = Number(p.hour) * 60 + Number(p.minute);
+  const withinRegularHours = !/Saturday|Sunday/.test(p.weekday) && minutes >= 570 && minutes < 960;
+  const time = d.toLocaleTimeString("en-US", { timeZone: "America/New_York", hour: "numeric", minute: "2-digit" });
+  return {
+    newYorkTime: `${p.weekday} ${time} ET`,
+    regularHours: "9:30 AM–4:00 PM ET, Monday–Friday, except market holidays",
+    withinRegularHours,
+    rule: withinRegularHours
+      ? "Say the market is open right now only if the results also show today is a regular trading day (not a holiday); otherwise say you couldn't confirm it's open right now."
+      : "This is outside regular trading hours: never say the market is open right now. Give the regular hours and say you couldn't confirm it's open right now.",
+  };
+}
+
+const PLACE_GUARDED_TOOLS = new Set(["web_search", "find_places"]);
+const PLACE_WORD = "\\p{Lu}[\\p{L}'’.-]*";
+const PLACE_SEQ = `${PLACE_WORD}(?:\\s+${PLACE_WORD})*`;
+/** Capitalized names after a place preposition ("in Miami", "or Orlando") or before "airport". */
+const PLACE_PATTERNS = [
+  new RegExp(`(?<![\\p{L}])(?:in|near|at|around|from|to|or|and)\\s+(${PLACE_SEQ})`, "gu"),
+  new RegExp(`(${PLACE_SEQ})\\s+(?:[Ii]nternational\\s+)?[Aa]irport`, "gu"),
+];
+const NOT_A_PLACE =
+  /^(?:is|are|was|what|when|where|how|does|do|can|could|will|would|the|a|an|i|my|our|today|tonight|tomorrow|monday|tuesday|wednesday|thursday|friday|saturday|sunday|january|february|march|april|may|june|july|august|september|october|november|december)$/i;
+/** "there", "it", "what about …", "same city", Spanish allí/ahí/mismo — the caller is continuing the earlier topic. */
+const CONTINUATION =
+  /(?<![\p{L}])(?:there|that (?:city|place|area|town|one)|same (?:city|place|area|town)|it|they|them|their|allí|allá|ahí|mismo|misma)(?![\p{L}])|^[\s¿¡]*(?:and|also|what about|how about|y|también|qué tal)(?![\p{L}])/iu;
+
+const foldText = (s) => String(s || "").normalize("NFD").replace(/\p{M}/gu, "").toLowerCase();
+
+function namedPlaces(text) {
+  const places = [];
+  for (const pattern of PLACE_PATTERNS) {
+    for (const m of String(text || "").matchAll(pattern)) {
+      const words = m[1].split(/\s+/);
+      while (words.length && NOT_A_PLACE.test(words[0])) words.shift();
+      if (words.length) places.push(words.join(" "));
+    }
+  }
+  return places;
+}
+
+function mentions(text, place) {
+  const p = foldText(place).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`(?<![\\p{L}])${p}(?![\\p{L}])`, "u").test(foldText(text));
+}
+
+/**
+ * Location guard (tools mode): the place a web_search / find_places call would use when the caller
+ * named it only in an earlier request and isn't continuing that topic; null when the call may run.
+ */
+function carriedOverPlace(name, args, { latest = "", earlier = [] } = {}) {
+  if (!PLACE_GUARDED_TOOLS.has(name)) return null;
+  // "Is there a pharmacy?" is not "there" the place
+  if (CONTINUATION.test(String(latest).replace(/\b(?:is|are|was|were)\s+there\b/gi, " "))) return null;
+  const searched = name === "web_search" ? args?.query : `${args?.location || ""} ${args?.query || ""}`;
+  for (const place of earlier.flatMap(namedPlaces)) {
+    if (mentions(searched, place) && !mentions(latest, place)) return place;
+  }
+  return null;
+}
+
+/** Tool output in place of a blocked lookup: the model asks instead of answering. */
+function askForPlace(place) {
+  return {
+    askCaller: "Which city do you mean?",
+    note: `Not looked up: the caller didn't name a place in this request. Don't assume ${place} from earlier in the call — ask which city they mean.`,
+  };
+}
+
+function createToolExecutor({ services, logger, deadlineMs = 2500, now = () => Date.now() }) {
   const s = services;
 
   const handlers = {
@@ -282,10 +373,12 @@ function createToolExecutor({ services, logger, deadlineMs = 2500 }) {
       return s.stocksService.getUsInterestRate();
     },
 
-    web_search(args) {
+    async web_search(args) {
       const query = String(args.query || "").trim();
       if (!query) return { error: "What should I search for?" };
-      return s.webSearchService.search(query);
+      const result = await s.webSearchService.search(query);
+      // Snippets like "a regular trading day" don't show the market is open right now
+      return MARKET_STATUS_QUERY.test(query) ? { ...result, marketClock: marketClock(now()) } : result;
     },
   };
 
@@ -322,6 +415,19 @@ function collectFunctionCalls(response) {
   return (response?.output || []).filter((o) => o?.type === "function_call" && o.call_id);
 }
 
+/** Log fields for a tool result. Web search keeps query and sources only — no third-party titles or snippet text. */
+function toolResultLogFields(name, args, result) {
+  if (name !== "web_search" || !Array.isArray(result?.results)) return { args, result };
+  return {
+    args,
+    result: {
+      count: result.results.length,
+      sources: result.results.map((r) => r.source || null),
+      published: result.results.map((r) => r.published || null),
+    },
+  };
+}
+
 function serializeOutput(result) {
   const text = JSON.stringify(result ?? {});
   if (text.length <= MAX_OUTPUT_CHARS) return text;
@@ -332,7 +438,7 @@ function serializeOutput(result) {
  * Run all calls in parallel; outputs keep call order.
  * timed(label, fn) is optional (latency metrics) and must pass results through.
  */
-function runToolCalls(calls, executor, { timed = (label, fn) => fn() } = {}) {
+function runToolCalls(calls, executor, { timed = (label, fn) => fn(), guard = () => null } = {}) {
   return Promise.all(
     calls.map(async (call) => {
       let args = {};
@@ -341,7 +447,9 @@ function runToolCalls(calls, executor, { timed = (label, fn) => fn() } = {}) {
       } catch {
         args = {};
       }
-      const result = await timed(`tool:${call.name}`, () => executor.execute(call.name, args));
+      // guard(name, args): a result object replaces the lookup (the service is not called)
+      const result =
+        guard(call.name, args) || (await timed(`tool:${call.name}`, () => executor.execute(call.name, args)));
       return { call_id: call.call_id, name: call.name, args, result, output: serializeOutput(result) };
     })
   );
@@ -355,6 +463,7 @@ const TOOLS_SESSION_RULES = [
   "- For general knowledge, answer directly without tools.",
   "- Never state live or changing facts (whether a place, airport, road, or service is open or closed today, current prices, schedules, today's events) unless they came from a tool result for this question. If no tool covers it, say you can't check that live right now and suggest where to check.",
   "- Only call a tool that matches the question. Never call an unrelated tool (for example, weather for a gas price question).",
+  "- If a lookup needs a place (city, store, airport, local prices) and their latest request didn't name one, reuse a place from earlier in the call only when they are clearly continuing that topic (\"there\", \"what about tomorrow?\"); otherwise ask which city first, without calling a tool. Never add a place they didn't say.",
   "- Never use tools for questions about this call's cost, free time, minutes, or plan.",
 ].join("\n");
 
@@ -367,16 +476,36 @@ function toolsTurnInstruction(langName) {
     `Reply in ${langName} only. About 15–25 words. ` +
     `If their latest request needs live data (weather, time, news, exchange rates, places, flight fares or status, sports scores, crypto, stocks, U.S. interest rates), ` +
     `first say one very short acknowledgement like "Let me check that." and then call the matching tool. Do this for every tool, including hotel, restaurant, and place searches. Never guess live numbers, and never state live facts (open or closed today, prices, schedules) without a tool result. ` +
+    `If it needs a place they didn't name in this request and they aren't clearly continuing an earlier topic, ask which city first instead of calling a tool. ` +
     `Otherwise answer from general knowledge (like ChatGPT). If you cannot complete an action (browse, open links, transfer), still help with a clear website or search tip plus what you can do next. ` +
     `Answer only their latest request.`
   );
 }
 
-function toolsFollowUpInstruction(langName) {
+/** e.g. "Tuesday, October 27, 2026, 09:25 UTC" — the model has no clock of its own. */
+function formatUtcNow(now) {
+  const d = new Date(now);
+  const date = d.toLocaleDateString("en-US", {
+    timeZone: "UTC",
+    weekday: "long",
+    month: "long",
+    day: "numeric",
+    year: "numeric",
+  });
+  return `${date}, ${d.toISOString().slice(11, 16)} UTC`;
+}
+
+/** webSearch: a web_search result is among those just returned (adds source and conflict rules). */
+function toolsFollowUpInstruction(langName, { now = Date.now(), webSearch = false } = {}) {
   return (
     `Reply in ${langName} only. Answer their latest request using only the tool results just returned, in one or two short sentences (15–25 words). ` +
-    `Do not repeat the acknowledgement. Never guess live numbers: if a result has an error, say you couldn't get it and suggest what they can try next. ` +
-    `State only facts that appear in the results. If the results don't answer the question (for example, a place listing doesn't say whether it is open), say you couldn't confirm that.`
+    `It is now ${formatUtcNow(now)}; use this to judge "today", "now", and "tonight". Never add a time zone the results don't state. ` +
+    `Do not repeat the acknowledgement. If a result has askCaller, just ask that question. Never guess live numbers: if a result has an error, say you couldn't get it and suggest what they can try next. ` +
+    `State only facts that appear in the results, and say which place the answer is for. If the results don't answer the question (for example, a place listing doesn't say whether it is open), say you couldn't confirm that.` +
+    (webSearch
+      ? ` For web results, name the source briefly (for example, "according to AAA"). Describe only what the results show; never turn a few listings into "most" or "all". ` +
+        `If the results disagree, or don't show the fact is current for right now, say you couldn't confirm it and suggest where to check.`
+      : "")
   );
 }
 
@@ -424,6 +553,10 @@ module.exports = {
   createToolExecutor,
   collectFunctionCalls,
   runToolCalls,
+  toolResultLogFields,
+  carriedOverPlace,
+  askForPlace,
+  marketClock,
   fetchWeatherForPlace,
   fetchWeatherForPlaces,
   TOOLS_SESSION_RULES,

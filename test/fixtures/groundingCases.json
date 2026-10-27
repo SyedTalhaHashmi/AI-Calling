@@ -1,0 +1,192 @@
+{
+  "note": "Saved Exa results from a local tools-mode test call on 2026-10-27 (snippets as returned, max 400 chars). Used by dev/groundingReplay.js; no Exa calls.",
+  "grounding": [
+    {
+      "id": "airport",
+      "source": "faa|groundstop|according to",
+      "question": "Is Miami airport open today?",
+      "at": "2026-10-27T11:57:50.123Z",
+      "query": "Miami airport open status today",
+      "results": [
+        {
+          "title": "Miami International Airport",
+          "source": "fly.faa.gov",
+          "snippet": "Miami International Airport\n\nAIRPORT STATUS INFORMATION provided by the FAA's Air Traffic Control System Command Center \n\n| Miami International Airport (MIA) Real-time Status |\n| --- |\n| The status information provided on this site indicates general airport conditions; it is not flight-specific. Check with your airline to determine if your flight is affected. |\n| Delays by Destination: No destinat"
+        },
+        {
+          "title": "Current Operations Plan Advisory",
+          "source": "fly.faa.gov",
+          "snippet": "Current Operations Plan Advisory\n\n| Current Operations Plan Advisory |\n| --- |\n| ATCSCC ADVZY 031 DCC 10/27/2026 OPERATIONS PLAN RAW TEXT: EVENT TIME: 27/1000 - AND LATER ____________________________________________________________________ GOOD MORNING. DEN INITIATIVES PLANNED FOR LOW CEILINGS AND VISIBILITY. BOS AND JFK INITIATIVES EXPECTED FOR CONSTRUCTION. SEA INITIATIVES PLANNED FOR LOW CEILIN"
+        },
+        {
+          "title": "Miami (MIA) delays and ground stop status — GroundStop.app",
+          "source": "groundstop.app",
+          "snippet": "There is no ground stop at MIA as of Oct 27, 09:22 UTC.\n\nMiami (MIA, ICAO KMIA) serves Miami, FL and sits in Miami Center (ZMA) airspace. Local time there is ... 1 hr 59 min, against 1 hr 16 min nationally. The"
+        }
+      ],
+      "recordedAnswer": "Miami International Airport is open today, and there are no current ground stops reported."
+    },
+    {
+      "id": "gas",
+      "source": "aaa|miami herald|gasolytics|islander|according to",
+      "question": "What is the average gas price in Miami today?",
+      "at": "2026-10-27T11:58:03.143Z",
+      "query": "average gas price in Miami today",
+      "results": [
+        {
+          "title": "Florida gas averages: Miami, Fort Lauderdale and beyond | Miami Herald",
+          "source": "miamiherald.com",
+          "published": "2026-10-27",
+          "snippet": "## Gas prices in South Florida\n\nMiami-Dade: The average price: $4.07 on Tuesday, Oct. 27, a 5-cent decrease from a week ago, according to AAA.\n\nFort Lauderdale: $4.10, a 6-cent decrease from a week ago.\n\nWest Palm Beach/Boca Raton: $4.21, a 4-cent decrease from a week ago.\n\nMonroe County: $4.33, a 6-cent decrease from a week ago."
+        },
+        {
+          "title": "Miami Gas Prices — Today's Average Price Per Gallon · Gasolytics",
+          "source": "gasolytics.com",
+          "snippet": "# Miami Gas Prices\n\nAverage price per gallon in the Miami metro (AAA’s Miami area), observed Oct 26, 2026 by AAA. Regular is currently $4.10/gal — $0.01 above the Florida average of $4.09, and $0.19 below the U.S. average of $4.29. That ranks #7 of 24 Florida metros, cheapest first.\n\nRegular $4.10\n\nMid-grade $4.56\n\nPremium $4.79\n\nDiesel $6.13\n\nRegular, change:▼ −$0.01 Daily change▼ −$0.03 wk▼ −$0."
+        },
+        {
+          "title": "Miami gas prices rise; Key Biscayne stays near $6 | Miami | islandernews.com",
+          "source": "islandernews.com",
+          "published": "2026-10-26",
+          "snippet": "## Miami's average climbs to $4.15 per gallon, while Island stations charge $5.98 and $5.99 for regular gasoline. \n\n- Islander News Staff \n- Oct 26, 2026 \n- 21 hrs ago\n- Comments \n\n \n\n \n\n A Mobil gas pump displays regular gasoline at $4.09 per gallon. Miami's average price rose to $4.15 this week, while motorists on Key Biscayne continued paying $5.98 to $5.99 per gallon. \n\nMiami drivers will pay "
+        }
+      ],
+      "recordedAnswer": "The average gas price in Miami today is about $4.07 per gallon."
+    },
+    {
+      "id": "walmart",
+      "source": "walmart.com|waze|apple maps|according to",
+      "mustMatch": "miami|which city|which walmart|which store",
+      "mustNot": "\b(most|all)\b",
+      "question": "What time does Walmart close tonight?",
+      "at": "2026-10-27T11:58:16.208Z",
+      "query": "Walmart closing time in Miami tonight",
+      "results": [
+        {
+          "title": "Walmart Grocery in Miami, FL – Home Delivery, Curbside Pickup - Walmart.com | Store 6397",
+          "source": "walmart.com",
+          "snippet": "# Grocery Pickup and Delivery at Miami Sw 127th Ave Supercenter\n\nWalmart Supercenter #6397 15601 Sw 127th Ave, Miami, FL 33177\n\nOpen\n\n · until 11pm\n\n305-964-3765 Get Directions\n\n### Pickup\n\nCome to the store & we’ll load your car.\n\n### Delivery\n\nGet items brought right to your door. Fees apply\n\n### Shipping\n\nShop even more items and get them shipped in no time.\n\n...\n\n## About the Grocery Pickup an"
+        },
+        {
+          "title": "Driving directions to Walmart Supercenter, 15885 SW 88th St, Miami - Waze",
+          "source": "waze.com",
+          "snippet": "### (305) 383-3611 (+1 305-383-3611)\n\n### walmart.com/store/1680-kendall-fl?veh=seo_loc\n\nOpen now\n\nSunday 06:00 - 23:00 Monday 06:00 - 23:00 Tuesday 06:00 - 23:00 Wednesday 06:00 - 23:00 Thursday 06:00 - 23:00 Friday 06:00 - 23:00 Saturday 06:00 - 23:00"
+        },
+        {
+          "title": "Walmart Supercenter in Miami, FL United States - Apple Maps",
+          "source": "maps.apple.com",
+          "snippet": "Superstore · Fontainebleau Park Plaza\n\nHOURS\n\nOpen\n...\n### Hours\n\nEvery Day\n\n6:00 AM – 11:00 PM\n\n### Website\n\nwalmart.com/store/4161-miami-fl\n\n### Phone\n\n+1 (786) 801-5704 (+17868015704)\n\n### Address\n\n9191 W Flagler St Miami, FL 33174 United States"
+        }
+      ],
+      "recordedAnswer": "Most Walmart locations in Miami close at 11 PM tonight."
+    },
+    {
+      "id": "market",
+      "source": "status.market|market ?open ?time|marketopentime|according to",
+      "mustMatch": "couldn.t confirm|pre-?market|9:30|opens|not open|closed",
+      "mustNot": "^(?!.*(couldn.t confirm|not open|isn.t open)).*(ongoing|currently open|open (right )?now|trading now)",
+      "question": "Is the stock market open today?",
+      "at": "2026-10-27T11:58:37.151Z",
+      "query": "Is the stock market open today",
+      "results": [
+        {
+          "title": "Are US markets open? Nasdaq & NYSE status",
+          "source": "status.market",
+          "snippet": "# Are US markets open? Nasdaq & NYSE status\n\nLive status for Nasdaq and NYSE with countdowns in your local time.\n\n🇺🇸\n\nNYSE\n\nOpen•🌅 Pre-market\n\nCloses in 4h 34m 31s\n\nTue, Oct 27 · 1:30 PM UTC\n...\n🇸\n\nNASDAQ\n\nOpen•🌅 Pre-market\n\nCloses in 4h 34m 31s\n\nTue, Oct"
+        },
+        {
+          "title": "Is the market open?",
+          "source": "status.market",
+          "snippet": "Is the market open?\n\n# Is the stock market open today?\n\nLive status for major exchanges — automatically adjusted to your time\n\nAny session counts as open\n\n🇺🇸\n\nNYSE\n\nClosed•💤 Closed\n\nOpens in 4h 30m 59s\n\nTue, Oct 27 · 8:00 AM UTC\n\nWhy closed: Outside trading hours\n\n🇺🇸\n\nNASDAQ\n\nClosed•💤 Closed\n\nOpens in 4h 30m 59s\n\nTue, Oct 27 · 8:00 AM UTC\n\nWhy closed: Outside trading hours\n\n🇨🇳\n\nShanghai (S"
+        },
+        {
+          "title": "Is the Stock Market Open Today? Live NYSE & Nasdaq Status | Market Open Time",
+          "source": "marketopentime.com",
+          "snippet": "Tuesday, October 27, 2026 is a regular U.S. stock-market trading day. Premarket trading begins at 4:00 a.m. ET. · Last verified: 2:12 AM UTC\n...\nStatus\n\nCLOSED\n\nTuesday, October 27, 2026\n\nRegular trading hours\n\nMarket Open\n\n9:30 AM\n\nMarket Close\n\n4:00 PM"
+        }
+      ],
+      "recordedAnswer": "The stock market is open today, and regular trading hours are ongoing."
+    },
+    {
+      "id": "real-madrid",
+      "source": "espn|realmadrid.com|official|laliga.com|la ?liga.s (site|website|schedule|calendar)|according to",
+      "question": "When is the next Real Madrid match?",
+      "at": "2026-10-27T11:58:49.032Z",
+      "query": "next Real Madrid match date and time",
+      "results": [
+        {
+          "title": "Calendar and Upcoming Matches of the Real Madrid | LALIGA",
+          "source": "laliga.com",
+          "snippet": "| DATE | DATETIME | MATCH | COMPETITION | BROADCASTER |\n| --- | --- | --- | --- | --- |\n| SUN 01.11.2026 | 15:15 | R. Racing Club VS Real Madrid | LALIGA EA SPORTS | - |\n| Watch Match | | | | |\n| WED 04.11.2026 | 17:45 | AEK Atenas VS Real Madrid | UEFA Champions League | - |\n| Watch Match | | | | |\n| SAT 07.11.2026 | 20:00 | Valencia CF VS Real Madrid | LALIGA EA SPORTS | - |\n| Watch Match | | | "
+        },
+        {
+          "title": "Real Madrid 2026-27 Schedule - ESPN",
+          "source": "espn.com",
+          "snippet": "Sat, Nov 21 | Real Madrid | v | Celta Vigo | 3:00 PM | ... | ESPN Deportes/ESPN+ |\n| Tue, Nov 24 | Real Madrid | v | PSV Eindhoven | 3:00 PM | UEFA Champions League | ... + |\n| Sun, Nov 29 | Real Madrid | v | Alavés | TBD | Spanish LALIGA | ESPN+ |"
+        },
+        {
+          "title": "The Racing de Santander-Real Madrid match will be played on Sunday, November 1, at 4:15 pm",
+          "source": "realmadrid.com",
+          "published": "2026-10-03",
+          "snippet": "'s team will face Matchday 11 of La Liga at El Sardinero.\n...\n. 03/10/2026\n\nLaLiga has announced the schedule for the Matchday 11 fixtures. Real Madrid will visit Racing de Santander at El Sardinero next Sunday, November 1, at 4:15 pm (Orange TV and Dazn)."
+        }
+      ],
+      "recordedAnswer": "The next Real Madrid match is on Sunday, November 1, 2026, at 4:15 PM against Racing de Santander in LaLiga.",
+      "mustNot": "\b(UTC|GMT)\b"
+    },
+    {
+      "id": "no-results",
+      "question": "Is the Walmart on West Flagler Street in Miami open right now?",
+      "at": "2026-10-27T11:58:16.208Z",
+      "query": "Walmart West Flagler Street Miami open now",
+      "error": "No web results found.",
+      "mustMatch": "couldn.t|can.t|unable|not able"
+    }
+  ],
+  "location": [
+    {
+      "id": "loc-walmart-after-miami",
+      "history": [
+        [
+          "user",
+          "Is it hot in Miami or Orlando today?"
+        ],
+        [
+          "assistant",
+          "In Miami it is about 24°C and partly cloudy; Orlando is about 18°C."
+        ],
+        [
+          "user",
+          "What is the average gas price in Miami today?"
+        ],
+        [
+          "assistant",
+          "About $4.07 a gallon in Miami, according to AAA."
+        ]
+      ],
+      "question": "What time does Walmart close tonight?",
+      "expect": "ask"
+    },
+    {
+      "id": "loc-gas-fresh-call",
+      "history": [],
+      "question": "What is the gas price today?",
+      "expect": "ask"
+    },
+    {
+      "id": "loc-there-continuation",
+      "history": [
+        [
+          "user",
+          "What is the weather in Miami?"
+        ],
+        [
+          "assistant",
+          "It is about 24°C and partly cloudy in Miami."
+        ]
+      ],
+      "question": "And is it raining there right now?",
+      "expect": "Miami"
+    }
+  ]
+}

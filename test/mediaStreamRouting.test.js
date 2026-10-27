@@ -53,7 +53,7 @@ function stubServices({ weatherDelayMs = 0, webSearch = false, fxError = false, 
           enabled: true,
           search: async (q) => {
             calls.push(["webSearch", q]);
-            return { results: [{ title: "T", source: "s.com", snippet: "x" }] };
+            return { results: [{ title: "Title-T", source: "s.com", snippet: "SNIPPET-BODY $4.07" }] };
           },
         }
       : { enabled: false },
@@ -111,7 +111,7 @@ function stubServices({ weatherDelayMs = 0, webSearch = false, fxError = false, 
 }
 
 /** Starts a call against a fake Realtime server; greeting already completed. */
-async function startCall({ routerMode, weatherDelayMs, webSearch, fxError, ratesError, flights } = {}) {
+async function startCall({ routerMode, weatherDelayMs, webSearch, fxError, ratesError, flights, logs } = {}) {
   const server = new WebSocket.Server({ port: 0 });
   await new Promise((r) => server.on("listening", r));
   const received = [];
@@ -124,7 +124,8 @@ async function startCall({ routerMode, weatherDelayMs, webSearch, fxError, rates
   const { services, calls } = stubServices({ weatherDelayMs, webSearch, fxError, ratesError, flights });
   const handler = createMediaStreamHandler({
     callStore: new CallStore(),
-    logger: silent,
+    // logs: optional array that collects [fields, message] for every log line
+    logger: logs ? { ...silent, info: (fields, msg) => logs.push([fields, msg]) } : silent,
     openaiApiKey: "test",
     ...services,
     twilioClient: null,
@@ -299,6 +300,83 @@ const weatherCall = (callId, args) => ({
     assert.deepStrictEqual(c.calls, [["webSearch", "gas price Miami today"]]);
     const out = c.received.find((m) => m.type === "conversation.item.create" && m.item?.call_id === "ws1");
     assert.ok(/s\.com/.test(out.item.output), out.item.output);
+    c.close();
+  });
+
+  await check("tools mode: web search follow-up asks for the source and gives today's date", async () => {
+    const c = await startCall({ routerMode: "tools", webSearch: true });
+    await c.say("What's the price of gas in Miami today?");
+    await waitFor(() => c.creates().length === 2);
+    await c.completeLast([
+      { type: "function_call", name: "web_search", call_id: "ws1", arguments: JSON.stringify({ query: "gas price Miami today" }) },
+    ]);
+    await waitFor(() => c.creates().length === 3);
+    const follow = c.creates()[2].response.instructions;
+    assert.ok(/name the source/i.test(follow), follow);
+    assert.ok(follow.includes(String(new Date().getUTCFullYear())) && /UTC/.test(follow), follow);
+    c.close();
+  });
+
+  /** Miami weather turn (lookup + spoken answer), then the next question; returns after the model's first round. */
+  async function afterMiamiTurn(c, nextQuestion, searchQuery) {
+    await c.say("Is it hot in Miami today?");
+    await waitFor(() => c.creates().length === 2);
+    await c.completeLast([weatherCall("w1", { city: "Miami", country: "US" })]);
+    await waitFor(() => c.creates().length === 3);
+    await c.completeLast([]);
+    await c.say(nextQuestion);
+    await waitFor(() => c.creates().length === 4);
+    await c.completeLast([
+      { type: "function_call", name: "web_search", call_id: "ws2", arguments: JSON.stringify({ query: searchQuery }) },
+    ]);
+    await waitFor(() => c.creates().length === 5);
+    return c.received.find((m) => m.type === "conversation.item.create" && m.item?.call_id === "ws2");
+  }
+
+  await check("tools mode: unrelated follow-up — search with the earlier city is not run; model told to ask", async () => {
+    const c = await startCall({ routerMode: "tools", webSearch: true });
+    const out = await afterMiamiTurn(c, "What time does Walmart close tonight?", "Walmart closing time in Miami tonight");
+    assert.ok(!c.calls.some(([n]) => n === "webSearch"), JSON.stringify(c.calls));
+    assert.ok(/ask which city/i.test(out.item.output) && /Miami/.test(out.item.output), out.item.output);
+    c.close();
+  });
+
+  await check("tools mode: clear continuation ('there') — search with the earlier city runs", async () => {
+    const c = await startCall({ routerMode: "tools", webSearch: true });
+    await afterMiamiTurn(c, "Is there a Walmart open there tonight?", "Walmart open tonight Miami");
+    assert.deepStrictEqual(c.calls.filter(([n]) => n === "webSearch"), [["webSearch", "Walmart open tonight Miami"]]);
+    c.close();
+  });
+
+  await check("tools mode: non-web lookups get the date but no source rule", async () => {
+    const c = await startCall({ routerMode: "tools" });
+    await c.say("Weather in Bogota?");
+    await waitFor(() => c.creates().length === 2);
+    await c.completeLast([weatherCall("c1", { city: "Bogota" })]);
+    await waitFor(() => c.creates().length === 3);
+    const follow = c.creates()[2].response.instructions;
+    assert.ok(/UTC/.test(follow), follow);
+    assert.ok(!/name the source/i.test(follow), follow);
+    c.close();
+  });
+
+  await check("tools mode: web search log line has query and sources, never snippet text or titles", async () => {
+    const logs = [];
+    const c = await startCall({ routerMode: "tools", webSearch: true, logs });
+    await c.say("What's the price of gas in Miami today?");
+    await waitFor(() => c.creates().length === 2);
+    await c.completeLast([
+      { type: "function_call", name: "web_search", call_id: "ws1", arguments: JSON.stringify({ query: "gas price Miami today" }) },
+    ]);
+    await waitFor(() => c.creates().length === 3);
+    const line = logs.find(([, msg]) => msg === "Tool result");
+    assert.ok(line, "Tool result logged");
+    const json = JSON.stringify(line[0]);
+    assert.ok(!/SNIPPET|Title-T/.test(json), json);
+    assert.ok(/s\.com/.test(json) && /gas price Miami today/.test(json), json);
+    // The model still receives the full snippet
+    const out = c.received.find((m) => m.type === "conversation.item.create" && m.item?.call_id === "ws1");
+    assert.ok(/SNIPPET-BODY/.test(out.item.output), out.item.output);
     c.close();
   });
 

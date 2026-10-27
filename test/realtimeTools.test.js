@@ -14,6 +14,9 @@ const {
   parseRouterMode,
   parseToolDeadlineMs,
   toolChoiceAgreement,
+  toolResultLogFields,
+  carriedOverPlace,
+  marketClock,
   TOOLS_SESSION_RULES,
   WEB_SEARCH_SESSION_RULE,
 } = require("../handlers/realtimeTools");
@@ -441,6 +444,213 @@ const ALL_TOOLS = [
   await check("web search session rule names the tool and is separate from the base rules", async () => {
     assert.ok(/web_search/.test(WEB_SEARCH_SESSION_RULE));
     assert.ok(!/web_search/.test(TOOLS_SESSION_RULES));
+  });
+
+  // "What time does Walmart close tonight?" after Miami questions was searched as "… in Miami …"
+  await check("web_search examples name no city (the old 'gas price Miami today' biased queries to Miami)", async () => {
+    const { services, calls } = stubServices();
+    services.webSearchService = webSearchStub(calls);
+    const def = buildToolDefinitions(services).find((t) => t.name === "web_search");
+    const text = `${def.description} ${def.parameters.properties.query.description}`;
+    assert.ok(!/miami|bogota|cartagena|london/i.test(text), text);
+    assert.ok(/only if the caller (named|gave) it/i.test(def.parameters.properties.query.description), text);
+    // Live replay: a turn-level rule alone still produced "Walmart closing time in Miami tonight"
+    assert.ok(/didn't name one/i.test(def.description) && /ask which city/i.test(def.description), def.description);
+  });
+
+  // Live replay: with the UTC clock in the prompt, "15:15" from LaLiga became "15:15 UTC"
+  await check("follow-up forbids adding a time zone the results don't state", async () => {
+    const f = toolsFollowUpInstruction("English", { now: Date.UTC(2026, 9, 27) });
+    assert.ok(/never add a time zone/i.test(f), f);
+  });
+
+  await check("location rule: reuse an earlier place only when clearly continuing, otherwise ask", async () => {
+    for (const text of [TOOLS_SESSION_RULES, toolsTurnInstruction("English")]) {
+      assert.ok(/didn't name|doesn't name/i.test(text), text);
+      assert.ok(/clearly continuing/i.test(text), text);
+      assert.ok(/ask which city/i.test(text), text);
+    }
+  });
+
+  await check("follow-up gives the current UTC date and time so 'today' and 'now' can be judged", async () => {
+    const f = toolsFollowUpInstruction("English", { now: Date.UTC(2026, 9, 27, 9, 25) });
+    assert.ok(/Tuesday, October 27, 2026/.test(f), f);
+    assert.ok(/09:25 UTC/.test(f), f);
+    assert.ok(/which place/i.test(f), f);
+  });
+
+  await check("follow-up after web search: name the source, no 'most'/'all', conflicting or undated → couldn't confirm", async () => {
+    const f = toolsFollowUpInstruction("English", { now: Date.UTC(2026, 9, 27), webSearch: true });
+    assert.ok(/name the source/i.test(f), f);
+    assert.ok(/"most" or "all"/i.test(f), f);
+    assert.ok(/disagree/i.test(f) && /current/i.test(f) && /couldn't confirm/i.test(f), f);
+    assert.ok(!/miami/i.test(f), "example must not bias toward a city");
+    const plain = toolsFollowUpInstruction("English", { now: Date.UTC(2026, 9, 27) });
+    assert.ok(!/name the source/i.test(plain), "source rule only after a web search");
+  });
+
+  await check("web_search log fields keep query and sources, never titles or snippet text", async () => {
+    const result = {
+      results: [
+        { title: "Title-AAA", source: "miamiherald.com", published: "2026-10-27", snippet: "SNIPPET-BODY $4.07" },
+        { title: "Title-BBB", source: "gasolytics.com", snippet: "SNIPPET-BODY-2" },
+      ],
+    };
+    const fields = toolResultLogFields("web_search", { query: "gas price Miami today" }, result);
+    const json = JSON.stringify(fields);
+    assert.ok(!/SNIPPET|Title-/.test(json), json);
+    assert.deepStrictEqual(fields, {
+      args: { query: "gas price Miami today" },
+      result: { count: 2, sources: ["miamiherald.com", "gasolytics.com"], published: ["2026-10-27", null] },
+    });
+    assert.deepStrictEqual(toolResultLogFields("web_search", { query: "q" }, { error: "No web results found." }), {
+      args: { query: "q" },
+      result: { error: "No web results found." },
+    });
+  });
+
+  // Location guard: a place the caller named only in an earlier request is not searched unless they continue that topic
+  const miamiEarlier = ["Is it hot in Miami or Orlando today?", "What is the average gas price in Miami today?"];
+  const walmartQuery = { query: "Walmart closing time in Miami tonight" };
+
+  await check("guard: unrelated follow-up — web search with an earlier city is blocked", async () => {
+    const ctx = { latest: "What time does Walmart close tonight?", earlier: miamiEarlier };
+    assert.strictEqual(carriedOverPlace("web_search", walmartQuery, ctx), "Miami");
+    assert.strictEqual(
+      carriedOverPlace("web_search", { query: "Walmart hours Orlando today" }, ctx),
+      "Orlando"
+    );
+  });
+
+  await check("guard: unrelated follow-up — place search with an earlier city is blocked", async () => {
+    const ctx = { latest: "Find me a hotel", earlier: ["What's the weather in Bogota?"] };
+    assert.strictEqual(carriedOverPlace("find_places", { kind: "hotel", location: "Bogota" }, ctx), "Bogota");
+    assert.strictEqual(
+      carriedOverPlace("find_places", { kind: "local_service", location: "Miami, FL", query: "pharmacy" }, {
+        latest: "I need a pharmacy",
+        earlier: ["Is Miami airport open today?"],
+      }),
+      "Miami"
+    );
+    // "Is there …" is not "there" the place
+    assert.strictEqual(
+      carriedOverPlace("find_places", { kind: "local_service", location: "Miami", query: "pharmacy" }, {
+        latest: "Is there a pharmacy open tonight?",
+        earlier: miamiEarlier,
+      }),
+      "Miami"
+    );
+  });
+
+  await check("follow-up: a place question from the guard is asked, not reported as a failed lookup", async () => {
+    assert.ok(/askCaller/.test(toolsFollowUpInstruction("English", { now: 0 })));
+  });
+
+  await check("guard: clear continuations may reuse the earlier city", async () => {
+    for (const latest of [
+      "Is there a Walmart there?",
+      "What time does it close?",
+      "And the Walmart?",
+      "What about Walmart?",
+      "Same city, what time does Walmart close?",
+      "¿Y a qué hora cierra el Walmart allí?",
+    ]) {
+      assert.strictEqual(carriedOverPlace("web_search", walmartQuery, { latest, earlier: miamiEarlier }), null, latest);
+    }
+  });
+
+  await check("guard: allows places named now, searches without a place, and new places", async () => {
+    const earlier = miamiEarlier;
+    const allowed = [
+      ["web_search", walmartQuery, "What time does the Walmart in Miami close tonight?"],
+      ["web_search", { query: "Walmart closing time tonight" }, "What time does Walmart close tonight?"],
+      ["web_search", { query: "gas price Tampa today" }, "What's the gas price in Tampa?"],
+      ["find_places", { kind: "hotel", location: "Miami" }, "Find me a hotel in miami"],
+      ["web_search", { query: "Is the stock market open today" }, "Is the stock market open today?"],
+    ];
+    for (const [name, args, latest] of allowed) {
+      assert.strictEqual(carriedOverPlace(name, args, { latest, earlier }), null, latest);
+    }
+    assert.strictEqual(carriedOverPlace("web_search", walmartQuery, { latest: "Walmart hours?", earlier: [] }), null);
+  });
+
+  await check("guard: only web_search and find_places, and non-place names (teams, days) are not places", async () => {
+    const ctx = { latest: "What time does Walmart close tonight?", earlier: miamiEarlier };
+    assert.strictEqual(carriedOverPlace("get_weather", { city: "Miami" }, ctx), null);
+    assert.strictEqual(
+      carriedOverPlace("web_search", { query: "Real Madrid last match result" }, {
+        latest: "Who won the last match?",
+        earlier: ["When is the next Real Madrid match?"],
+      }),
+      null
+    );
+    assert.strictEqual(
+      carriedOverPlace("web_search", { query: "Walmart hours Monday" }, {
+        latest: "Is Walmart open?",
+        earlier: ["I fly to Miami on Monday"],
+      }),
+      null
+    );
+  });
+
+  await check("runToolCalls: a guard result replaces the lookup (service never called)", async () => {
+    const executed = [];
+    const executor = { execute: async (name) => (executed.push(name), { ok: true }) };
+    const calls = [
+      { call_id: "a", name: "web_search", arguments: JSON.stringify(walmartQuery) },
+      { call_id: "b", name: "get_weather", arguments: JSON.stringify({ city: "Miami" }) },
+    ];
+    const guard = (name) => (name === "web_search" ? { error: "ask which city" } : null);
+    const out = await runToolCalls(calls, executor, { guard });
+    assert.deepStrictEqual(executed, ["get_weather"]);
+    assert.deepStrictEqual(out[0].result, { error: "ask which city" });
+    assert.deepStrictEqual(out[1].result, { ok: true });
+  });
+
+  // Stock market: "open… ongoing" was said at 7:58 AM ET from a "regular trading day" snippet
+  await check("marketClock: New York time and regular-session flag (DST-aware, weekends closed)", async () => {
+    const pre = marketClock(Date.UTC(2026, 9, 27, 11, 58)); // Tue 7:58 AM EDT
+    assert.strictEqual(pre.withinRegularHours, false);
+    assert.ok(/Tuesday/.test(pre.newYorkTime) && /7:58 AM/.test(pre.newYorkTime), pre.newYorkTime);
+    assert.strictEqual(marketClock(Date.UTC(2026, 9, 27, 13, 30)).withinRegularHours, true); // 9:30 AM
+    assert.strictEqual(marketClock(Date.UTC(2026, 9, 27, 19, 59)).withinRegularHours, true); // 3:59 PM
+    assert.strictEqual(marketClock(Date.UTC(2026, 9, 27, 20, 0)).withinRegularHours, false); // 4:00 PM
+    assert.strictEqual(marketClock(Date.UTC(2026, 9, 31, 15, 0)).withinRegularHours, false); // Saturday
+    assert.strictEqual(marketClock(Date.UTC(2026, 11, 1, 14, 45)).withinRegularHours, true); // 9:45 AM EST
+    assert.strictEqual(marketClock(Date.UTC(2026, 11, 1, 14, 15)).withinRegularHours, false); // 9:15 AM EST
+  });
+
+  await check("web_search about stock market hours adds the market clock and the no-claim rule", async () => {
+    const { services, calls } = stubServices();
+    services.webSearchService = webSearchStub(calls);
+    const ex = createToolExecutor({ services, logger, now: () => Date.UTC(2026, 9, 27, 11, 58) });
+    const r = await ex.execute("web_search", { query: "Is the stock market open today" });
+    assert.strictEqual(r.results.length, 1);
+    assert.strictEqual(r.marketClock.withinRegularHours, false);
+    assert.ok(/couldn't confirm/i.test(r.marketClock.rule) && /open right now/i.test(r.marketClock.rule), r.marketClock.rule);
+    const nyse = await ex.execute("web_search", { query: "NYSE hours today" });
+    assert.ok(nyse.marketClock);
+    const gas = await ex.execute("web_search", { query: "gas price Tampa today" });
+    assert.strictEqual(gas.marketClock, undefined);
+    const quote = await ex.execute("web_search", { query: "Apple stock price today" });
+    assert.strictEqual(quote.marketClock, undefined, "a price lookup is not a market-status question");
+  });
+
+  await check("market clock is also added when the search fails, so 'couldn't confirm' still applies", async () => {
+    const { services, calls } = stubServices();
+    services.webSearchService = webSearchStub(calls, { error: "No web results found." });
+    const ex = createToolExecutor({ services, logger, now: () => Date.UTC(2026, 9, 27, 14, 0) });
+    const r = await ex.execute("web_search", { query: "is the stock market open right now" });
+    assert.strictEqual(r.error, "No web results found.");
+    assert.strictEqual(r.marketClock.withinRegularHours, true);
+  });
+
+  await check("other tools' log fields are unchanged", async () => {
+    const r = { city: "Miami", temp: 24 };
+    assert.deepStrictEqual(toolResultLogFields("get_weather", { city: "Miami" }, r), {
+      args: { city: "Miami" },
+      result: r,
+    });
   });
 
   console.log(`\n${process.exitCode ? "Some checks failed" : `All ${passed} checks passed`}`);

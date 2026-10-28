@@ -7,7 +7,7 @@
     "build": "node --check server.js && node --check handlers/mediaStream.js && node --check utils/intentRouter.js",
     "start": "node server.js",
     "dev": "node --watch server.js",
-    "test": "node test/intentRouter.test.js && node test/languageBilling.test.js && node test/turnMetrics.test.js && node test/cache.test.js && node test/stocksCache.test.js && node test/time.test.js && node test/webSearch.test.js && node test/providerReliability.test.js && node test/realtimeTools.test.js && node test/mediaStreamRouting.test.js && node test/callRoutes.test.js && node test/identity.test.js && node test/safety.test.js",
+    "test": "node test/intentRouter.test.js && node test/languageBilling.test.js && node test/turnMetrics.test.js && node test/cache.test.js && node test/stocksCache.test.js && node test/time.test.js && node test/webSearch.test.js && node test/providerReliability.test.js && node test/realtimeTools.test.js && node test/mediaStreamRouting.test.js && node test/callRoutes.test.js && node test/identity.test.js && node test/safety.test.js && node test/spokenFacts.test.js",
     "latency:report": "node dev/latencyReport.js",
     "test:live": "node test/liveApiSmoke.test.js",
     "test:complex": "node test/complexFlows.test.js",

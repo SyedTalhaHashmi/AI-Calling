@@ -1,5 +1,6 @@
 const axios = require("axios");
 const { MemoryCache } = require("./cache");
+const { airlineName } = require("../utils/spokenFacts");
 
 const BASE = "https://api.travelpayouts.com/v1/prices/cheap";
 
@@ -68,7 +69,11 @@ function createTravelService(token, logger) {
         destination: to,
         price: Number(best.price),
         airline: best.airline || "",
+        // Spoken name for tools mode ("AV" → "Avianca"); empty when unknown
+        airlineName: airlineName(best.airline),
         departureAt: best.departure_at || "",
+        // Set for round-trip fares; empty means one-way
+        returnAt: best.return_at || "",
         expiresAt: best.expires_at || "",
         currency,
       };

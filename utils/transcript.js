@@ -18,6 +18,12 @@ function formatTranscript(session) {
   ].join("\n");
 }
 
+/** False for calls blocked before the AI connected, or where the caller never said anything. */
+function hasCallerSpeech(session) {
+  return (session?.transcriptLines || []).some((line) => line.startsWith("Caller: "));
+}
+
 module.exports = {
   formatTranscript,
+  hasCallerSpeech,
 };

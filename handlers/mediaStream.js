@@ -29,8 +29,11 @@ const {
   isPlanCatalogQuestion,
   billingReply,
   billingInstruction,
+  billingTurnNote,
 } = require("../utils/billingReply");
 const { createTurnMetrics } = require("../utils/turnMetrics");
+const { identityReply } = require("../utils/identity");
+const { isCrisisMessage, crisisInstruction, SENSITIVE_TURN_NOTE } = require("../utils/safety");
 const {
   buildToolDefinitions,
   createToolExecutor,
@@ -100,7 +103,9 @@ function shouldDeferUserTurn(text) {
   if (!t) return true;
 
   // Bare ASR crumbs / fillers / backchannels — not a real turn
-  if (/^(you|uh+|u[mh]+|ah+|hmm+|mm+|mhm|eh+)$/i.test(t)) return true;
+  if (/^(you|uh+|u[mh]+|ah+|oh+|aha+|hmm+|mm+|mhm|eh+)$/i.test(t)) return true;
+  // "Oh okay" / "oh, I see" — production call answered a bare "Oh." with "Feel free to chat as long as you'd like!"
+  if (/^(oh+|ah+)[,\s]+(okay|ok|i see|right|wow|nice)$/i.test(t)) return true;
   if (
     /^(yeah|yep|yup|yes|no|nope|ok|okay|right|sure|great|cool|thanks|thank you)([,\s]+\1)*$/i.test(
       t
@@ -618,6 +623,29 @@ function createMediaStreamHandler({
               return;
             }
 
+            // Self-harm / suicide / abuse / danger: caring reply with 988 / 911 before any other routing
+            if (isCrisisMessage(trimmed)) {
+              metrics.setRoute(turnId, "safety");
+              logger.info({ callSid }, "Crisis message: safety reply");
+              if (openaiWs?.readyState !== WebSocket.OPEN || responseInProgress) {
+                metrics.finishWithoutReply(turnId, "skipped_busy");
+                return;
+              }
+              const langName = languageLabel(sessionRef?.replyLanguage || "en");
+              openaiWs.send(
+                JSON.stringify(createResponsePayload({ instructions: crisisInstruction(langName), tools: [] }, turnId))
+              );
+              return;
+            }
+
+            // "What's your name?" / "Who created you?" — fixed answers (Buddy, Brash3D Media Group)
+            const identity = identityReply(trimmed);
+            if (identity) {
+              metrics.setRoute(turnId, "identity");
+              sendReply(identity, { multilingual: true });
+              return;
+            }
+
             // Honest trial / plan answers — never invent unlimited free time
             if (isBillingQuestion(trimmed)) {
               metrics.setRoute(turnId, "billing");
@@ -640,7 +668,7 @@ function createMediaStreamHandler({
               }
               const langName = languageLabel(sessionRef?.replyLanguage || "en");
               const payload = createResponsePayload(
-                { instructions: toolsTurnInstruction(langName) },
+                { instructions: toolsTurnInstruction(langName) + SENSITIVE_TURN_NOTE + billingTurnNote(sessionRef) },
                 turnId
               );
               const callerTexts = transcriptLines
@@ -944,7 +972,7 @@ function createMediaStreamHandler({
                 JSON.stringify(
                   createResponsePayload(
                     {
-                      instructions: `Reply in ${langName} only. About 15–25 words. Answer from general knowledge when you can (like ChatGPT). Never state live or changing facts (whether a place or airport is open today, current prices, schedules, today's events): say you can't check that live right now and suggest where to check. If you cannot complete an action (browse, open links, transfer), still help with a clear website or search tip plus what you can do next. Answer only their latest request.`,
+                      instructions: `Reply in ${langName} only. About 15–25 words. Answer from general knowledge when you can (like ChatGPT). Never state live or changing facts (whether a place or airport is open today, current prices, schedules, today's events): say you can't check that live right now and suggest where to check. If you cannot complete an action (browse, open links, transfer), still help with a clear website or search tip plus what you can do next. Answer only their latest request.${SENSITIVE_TURN_NOTE}${billingTurnNote(callStore.get(callSid))}`,
                       tools: [],
                     },
                     turnId

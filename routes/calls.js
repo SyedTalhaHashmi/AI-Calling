@@ -5,7 +5,7 @@
  */
 const express = require("express");
 const twilio = require("twilio");
-const { formatTranscript } = require("../utils/transcript");
+const { formatTranscript, hasCallerSpeech } = require("../utils/transcript");
 
 const GENERIC_FALLBACK =
   "Sorry, the assistant had a problem. Please try again later. Goodbye.";
@@ -138,21 +138,26 @@ function createCallRoutes({ logger, callStore, services, config }) {
     }
 
     let transcriptSent = false;
-    try {
-      const transcriptBody = formatTranscript(session);
-      await services.email.sendTranscript({
-        callSid,
-        transcriptBody,
-        startedAt: session.startedAt,
-        to: session.transcriptEmailTo || undefined,
-      });
-      callStore.markEmailed(callSid);
-      transcriptSent = true;
-    } catch (error) {
-      logger.error(
-        { callSid, err: error.message },
-        "Failed sending transcript email"
-      );
+    // Blocked callers and hang-ups before speaking left "No conversation captured." emails
+    if (!hasCallerSpeech(session)) {
+      logger.info({ callSid, callStatus }, "Transcript not sent: caller never spoke");
+    } else {
+      try {
+        const transcriptBody = formatTranscript(session);
+        await services.email.sendTranscript({
+          callSid,
+          transcriptBody,
+          startedAt: session.startedAt,
+          to: session.transcriptEmailTo || undefined,
+        });
+        callStore.markEmailed(callSid);
+        transcriptSent = true;
+      } catch (error) {
+        logger.error(
+          { callSid, err: error.message },
+          "Failed sending transcript email"
+        );
+      }
     }
 
     const durationSeconds = Math.max(0, Number(req.body.CallDuration || 0));

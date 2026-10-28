@@ -18,7 +18,17 @@ const {
   extractNewsQuery,
   extractFlightNumber,
   extractCurrencies,
+  isHotelPriceQuestion,
+  mentionsFlights,
 } = require("../utils/intentRouter");
+const {
+  formatWeatherFact,
+  formatFareFact,
+  formatPlacesFact,
+  hotelPriceInstruction,
+  cityName,
+} = require("../utils/spokenFacts");
+const { rememberTrip, recentTrip, completeRoute, shortPlaceReply } = require("../utils/tripContext");
 const {
   updateReplyLanguage,
   languageInstruction,
@@ -173,16 +183,16 @@ const WEATHER_TOOL = {
   },
 };
 
-function formatWeatherFact(result) {
-  if (result.error) return result.error;
-  const where = [result.city, result.country].filter(Boolean).join(", ");
-  const humidity =
-    result.humidity != null ? `, humidity ${result.humidity}%` : "";
-  return `${result.temp} degrees and ${result.description} in ${where}${humidity}`;
-}
-
 const TIME_UP_INSTRUCTION =
   "Say exactly: Your time for this call is up. To keep talking, subscribe or add minutes at buddycallai dot com. Goodbye.";
+const timeWarningInstruction = (seconds) =>
+  `Say exactly: Quick heads-up, there are about ${seconds} seconds left on this call.`;
+
+/**
+ * Fast-path replies are the whole answer. In a production call the model said "Let me find the
+ * prices… please hold on" over a hotel list, then went silent — nothing runs after this reply.
+ */
+const NO_PROMISE_NOTE = "don't say you'll check or look anything up, and don't ask them to hold on";
 
 function createMediaStreamHandler({
   callStore,
@@ -207,6 +217,8 @@ function createMediaStreamHandler({
   routerMode = "regex",
   toolDeadlineMs = 2500,
   realtimeUrl = OPENAI_REALTIME_URL,
+  /** Limited calls: heads-up this many seconds before the time-up message. */
+  timeWarningSeconds = 15,
 }) {
   const toolsMode = routerMode === "tools";
   const toolServices = {
@@ -262,6 +274,9 @@ function createMediaStreamHandler({
      */
     let pendingCreatedCancels = 0;
     let timeLimitTimer = null;
+    /** Caller mid-utterance, and when they last stopped — the time heads-up never talks over them. */
+    let callerSpeaking = false;
+    let lastSpeechStoppedAt = 0;
 
     /** Call immediately before each response.create; returns generation for metadata. */
     function markResponseCreateSent() {
@@ -411,8 +426,7 @@ function createMediaStreamHandler({
         streamSid = msg.start?.streamSid || msg.streamSid;
         metrics.setCallSid(callSid);
         callStore.getOrCreate(callSid);
-        callStore.addAssistantMessage(callSid, GREETING);
-        transcriptLines.push(`AI: ${GREETING}`);
+        // The greeting reaches the transcript from its spoken audio, like every other reply
         logger.info({ callSid, streamSid }, "Media stream started");
 
         const bill = callStore.get(callSid);
@@ -424,8 +438,30 @@ function createMediaStreamHandler({
 
         if (maxSec != null && maxSec > 0 && twilioClient) {
           let elapsed = 0;
+          // Only when there's time to hear it and still talk (a 60-second trial: at 45 seconds)
+          let warningDue = maxSec >= timeWarningSeconds * 2;
           timeLimitTimer = setInterval(() => {
             elapsed += 1;
+            if (warningDue && elapsed >= maxSec - timeWarningSeconds) {
+              const quiet =
+                !responseInProgress &&
+                !callerSpeaking &&
+                Date.now() - lastSpeechStoppedAt > 2000 &&
+                openaiWs?.readyState === WebSocket.OPEN;
+              if (quiet) {
+                warningDue = false;
+                openaiWs.send(
+                  JSON.stringify(
+                    createResponsePayload(
+                      { instructions: timeWarningInstruction(maxSec - elapsed), tools: [] },
+                      metrics.beginSystemTurn("time_warning")
+                    )
+                  )
+                );
+              } else if (maxSec - elapsed < 5) {
+                warningDue = false; // too late to be useful
+              }
+            }
             if (elapsed < maxSec) return;
             if (timeLimitTimer) {
               clearInterval(timeLimitTimer);
@@ -550,7 +586,7 @@ function createMediaStreamHandler({
                     opts.maxWords
                       ? `in up to ${opts.maxWords} words, keeping every name and number`
                       : "one short sentence (15 to 20 words max)"
-                  }: ${reply}${/[.?!]$/.test(reply) ? "" : "."}`
+                  }; it is your whole answer, so ${NO_PROMISE_NOTE}: ${reply}${/[.?!]$/.test(reply) ? "" : "."}`
                 : `Say only the quoted sentence, word for word, with no other facts or numbers: "${reply}"`;
             // No tools on fast-path replies — prevents double weather/hotel answers
             openaiWs.send(
@@ -558,10 +594,22 @@ function createMediaStreamHandler({
                 createResponsePayload({ instructions: instruction, tools: [] }, opts.turnId)
               )
             );
-            callStore.addAssistantMessage(callSid, reply);
-            transcriptLines.push(`AI: ${reply}`);
-            const aiReplyLog = reply.length > 100 ? reply.slice(0, 100) + "…" : reply;
-            logger.info({ callSid, reply, role: "assistant" }, `AI: ${aiReplyLog}`);
+            // The transcript gets what was actually spoken (output_audio_transcript.done), which
+            // can differ from this planned fact — logged separately for debugging
+            const factLog = reply.length > 100 ? reply.slice(0, 100) + "…" : reply;
+            logger.info({ callSid, fact: reply }, `Fast-path fact: ${factLog}`);
+          }
+
+          /** A model-worded reply with no tools (e.g. typical hotel prices around looked-up facts). */
+          function sendModelTurn(instructions, turnId, logLabel) {
+            if (openaiWs?.readyState !== WebSocket.OPEN) return;
+            if (responseInProgress) {
+              logger.info({ callSid }, `Skip ${logLabel}: response already in progress`);
+              metrics.finishWithoutReply(turnId, "skipped_busy");
+              return;
+            }
+            openaiWs.send(JSON.stringify(createResponsePayload({ instructions, tools: [] }, turnId)));
+            logger.info({ callSid }, logLabel);
           }
 
           function handleUserTranscript(text, turnId) {
@@ -585,6 +633,7 @@ function createMediaStreamHandler({
             callStore.addUserMessage(callSid, trimmed);
 
             const sessionRef = callStore.get(callSid);
+            if (sessionRef) sessionRef.callerTurns = (sessionRef.callerTurns || 0) + 1;
             if (sessionRef?.callEnding) {
               logger.info({ callSid }, "Skip turn: call ending (time limit)");
               metrics.finishWithoutReply(turnId, "call_ending");
@@ -689,9 +738,20 @@ function createMediaStreamHandler({
             // Last turn asked "Which city?" for the time — a bare place name answers it
             const awaitingTimeCity = Boolean(sessionRef?.awaitingTimeCity);
             if (sessionRef) sessionRef.awaitingTimeCity = false;
+            // Last turn asked for a route end or a hotel / restaurant city (lasts one turn)
+            const awaiting = sessionRef?.awaiting || null;
+            if (sessionRef) sessionRef.awaiting = null;
             let intent = resolveIntent(trimmed);
             if (awaitingTimeCity && intent === "chat" && timeService?.resolvePlace(trimmed)) {
               intent = "time";
+            }
+            if (awaiting && intent === "chat") {
+              if (awaiting.kind === "fare") {
+                const r = completeRoute(trimmed, awaiting);
+                if (r.origin !== awaiting.origin || r.destination !== awaiting.destination) intent = "travel_price";
+              } else if (extractLocation(trimmed) || shortPlaceReply(trimmed)) {
+                intent = awaiting.kind;
+              }
             }
             logger.info({ callSid, intent }, "Intent resolved");
             metrics.setRoute(turnId, "fast_path", intent);
@@ -725,7 +785,7 @@ function createMediaStreamHandler({
                   );
                   const facts = [];
                   places.forEach((place, i) => {
-                    facts.push(formatWeatherFact(results[i]));
+                    facts.push(formatWeatherFact(results[i], { callerNumber: sessionRef?.callerNumber }));
                     logger.info(
                       { callSid, city: place.city, country: place.country, result: results[i] },
                       "Weather fast path"
@@ -810,34 +870,68 @@ function createMediaStreamHandler({
               })();
               return;
             }
-            if (intent === "hotel" && placesService?.enabled) {
-              const location = extractLocation(trimmed);
-              (async () => {
-                const result = await timed("places_hotels", () =>
-                  placesService.searchHotels(location)
+            if ((intent === "hotel" || intent === "food") && placesService?.enabled) {
+              const kind = intent;
+              const route = extractTravelRoute(trimmed);
+              const trip = recentTrip(sessionRef);
+              // "Flights and hotels from Bogotá to Miami": hotels at the destination, not the first city named
+              let city =
+                (kind === "hotel" && route.origin && route.destination && cityName(route.destination)) ||
+                extractLocation(trimmed) ||
+                (awaiting?.kind === kind && shortPlaceReply(trimmed)) ||
+                // Same-topic follow-up ("$80 a night?") keeps the hotel city from the last few turns
+                (kind === "hotel" && (trip?.hotelCity || (trip?.destination && cityName(trip.destination)))) ||
+                "";
+              if (!city) {
+                if (sessionRef) sessionRef.awaiting = { kind };
+                sendReply(
+                  kind === "hotel" ? "Which city should I look up hotels in?" : "Which city should I look up restaurants in?",
+                  { multilingual: true }
                 );
-                const fact = result.error
-                  ? result.error
-                  : `Popular hotels: ${result.places.map((p) => `${p.name}, rated ${p.rating || "N A"}`).join(". ")}`;
-                sendReply(fact, { multilingual: !result.error });
-              })();
-              return;
-            }
-            if (intent === "food" && placesService?.enabled) {
-              const location = extractLocation(trimmed);
+                return;
+              }
+              const priceAsked = kind === "hotel" && isHotelPriceQuestion(trimmed);
+              const withFare =
+                kind === "hotel" && route.origin && route.destination && mentionsFlights(trimmed) && travelService?.enabled;
+              if (kind === "hotel") rememberTrip(sessionRef, { hotelCity: city, ...(withFare ? route : {}) });
               (async () => {
-                const result = await timed("places_food", () =>
-                  placesService.searchFood(location)
-                );
-                const fact = result.error
-                  ? result.error
-                  : `Popular food places: ${result.places.map((p) => `${p.name}, rated ${p.rating || "N A"}`).join(". ")}`;
-                sendReply(fact, { multilingual: !result.error });
+                const [fare, result] = await Promise.all([
+                  withFare
+                    ? timed("travel_fare", () => travelService.cheapestRoute(route.origin, route.destination))
+                    : null,
+                  kind === "hotel"
+                    ? timed("places_hotels", () => placesService.searchHotels(city))
+                    : timed("places_food", () => placesService.searchFood(city)),
+                ]);
+                // Price asks (and trip asks) get a typical nightly range next to the real hotels
+                if (priceAsked || fare) {
+                  const langName = languageLabel(callStore.get(callSid)?.replyLanguage || "en");
+                  sendModelTurn(
+                    hotelPriceInstruction(langName, {
+                      city,
+                      places: result.error ? [] : result.places,
+                      fareFact: fare && !fare.error ? formatFareFact(fare) : "",
+                      question: trimmed,
+                    }),
+                    turnId,
+                    "Hotel price turn"
+                  );
+                  return;
+                }
+                sendReply(formatPlacesFact(result, { kind, city }), {
+                  multilingual: !result.error,
+                  maxWords: result.error ? undefined : 50,
+                });
               })();
               return;
             }
             if (intent === "travel_price" && travelService?.enabled) {
-              const { origin, destination } = extractTravelRoute(trimmed);
+              let { origin, destination } = completeRoute(trimmed, awaiting?.kind === "fare" ? awaiting : null);
+              // "Average price?" right after the trip came up: same route, don't ask again
+              const trip = recentTrip(sessionRef);
+              if (!origin && !destination && trip?.origin && trip?.destination) {
+                ({ origin, destination } = trip);
+              }
               logger.info(
                 {
                   callSid,
@@ -848,20 +942,23 @@ function createMediaStreamHandler({
                 "Travel fast path triggered"
               );
               if (!origin || !destination) {
+                if (sessionRef) sessionRef.awaiting = { kind: "fare", origin, destination };
                 sendReply(
-                  "Sure — tell me the from city and to city, and I'll check recent fare prices.",
+                  origin
+                    ? `Sure. And where are you flying to from ${cityName(origin)}?`
+                    : destination
+                      ? `Sure. Which city are you flying from to ${cityName(destination)}?`
+                      : "Sure. Which city are you flying from, and where to?",
                   { multilingual: true }
                 );
                 return;
               }
+              rememberTrip(sessionRef, { origin, destination });
               (async () => {
                 const result = await timed("travel_fare", () =>
                   travelService.cheapestRoute(origin, destination)
                 );
-                const fact = result.error
-                  ? result.error
-                  : `Cheapest recent fare from ${result.origin} to ${result.destination} is about ${result.price} ${result.currency}.`;
-                sendReply(fact, { multilingual: !result.error });
+                sendReply(formatFareFact(result), { multilingual: !result.error, maxWords: result.error ? undefined : 45 });
               })();
               return;
             }
@@ -972,7 +1069,7 @@ function createMediaStreamHandler({
                 JSON.stringify(
                   createResponsePayload(
                     {
-                      instructions: `Reply in ${langName} only. About 15–25 words. Answer from general knowledge when you can (like ChatGPT). Never state live or changing facts (whether a place or airport is open today, current prices, schedules, today's events): say you can't check that live right now and suggest where to check. If you cannot complete an action (browse, open links, transfer), still help with a clear website or search tip plus what you can do next. Answer only their latest request.${SENSITIVE_TURN_NOTE}${billingTurnNote(callStore.get(callSid))}`,
+                      instructions: `Reply in ${langName} only. About 15–25 words. Answer from general knowledge when you can (like ChatGPT). Never state live or changing facts (whether a place or airport is open today, current prices, schedules, today's events): say you can't check that live right now and suggest where to check. If you cannot complete an action (browse, open links, transfer), still help with a clear website or search tip plus what you can do next. Answer only their latest request. Don't say you'll check or look anything up, and don't ask them to hold on: nothing runs after this reply.${SENSITIVE_TURN_NOTE}${billingTurnNote(callStore.get(callSid))}`,
                       tools: [],
                     },
                     turnId
@@ -984,11 +1081,14 @@ function createMediaStreamHandler({
 
           if (ev.type === "input_audio_buffer.speech_started") {
             userSpeechSeq += 1;
+            callerSpeaking = true;
             metrics.onSpeechStarted(ev.item_id);
             interruptAgentPlayback();
           }
 
           if (ev.type === "input_audio_buffer.speech_stopped") {
+            callerSpeaking = false;
+            lastSpeechStoppedAt = Date.now();
             metrics.onSpeechStopped(ev.item_id);
           }
 

@@ -45,8 +45,9 @@ class FakeTwilio extends EventEmitter {
   }
 }
 
-function stubServices({ weatherDelayMs = 0, webSearch = false, fxError = false, ratesError = false, flights = false } = {}) {
+function stubServices({ weatherDelayMs = 0, webSearch = false, fxError = false, ratesError = false, flights = false, places = false, travel = false } = {}) {
   const calls = [];
+  const placeList = (prefix) => ({ places: [{ name: `${prefix} One`, rating: 4.7 }, { name: `${prefix} Two`, rating: 4.5 }] });
   const services = {
     webSearchService: webSearch
       ? {
@@ -74,8 +75,28 @@ function stubServices({ weatherDelayMs = 0, webSearch = false, fxError = false, 
         return { error: "disabled" };
       },
     },
-    placesService: { enabled: false },
-    travelService: { enabled: false },
+    placesService: places
+      ? {
+          enabled: true,
+          searchHotels: async (loc) => {
+            calls.push(["hotels", loc]);
+            return loc ? placeList("Hotel") : { error: "Please share a city for hotel search." };
+          },
+          searchFood: async (loc) => {
+            calls.push(["food", loc]);
+            return loc ? placeList("Eatery") : { error: "Please share a city for food search." };
+          },
+        }
+      : { enabled: false },
+    travelService: travel
+      ? {
+          enabled: true,
+          cheapestRoute: async (origin, destination) => {
+            calls.push(["fare", origin, destination]);
+            return { origin, destination, price: 410, currency: "USD", airline: "AV", returnAt: "2026-11-09" };
+          },
+        }
+      : { enabled: false },
     newsService: { enabled: false },
     fxService: fxError
       ? {
@@ -111,7 +132,7 @@ function stubServices({ weatherDelayMs = 0, webSearch = false, fxError = false, 
 }
 
 /** Starts a call against a fake Realtime server; greeting already completed. */
-async function startCall({ routerMode, weatherDelayMs, webSearch, fxError, ratesError, flights, logs, session } = {}) {
+async function startCall({ routerMode, weatherDelayMs, webSearch, fxError, ratesError, flights, places, travel, logs, session, twilioClient = null, timeWarningSeconds } = {}) {
   const server = new WebSocket.Server({ port: 0 });
   await new Promise((r) => server.on("listening", r));
   const received = [];
@@ -121,7 +142,7 @@ async function startCall({ routerMode, weatherDelayMs, webSearch, fxError, rates
     ws.on("message", (d) => received.push(JSON.parse(d.toString())));
   });
 
-  const { services, calls } = stubServices({ weatherDelayMs, webSearch, fxError, ratesError, flights });
+  const { services, calls } = stubServices({ weatherDelayMs, webSearch, fxError, ratesError, flights, places, travel });
   const callStore = new CallStore();
   // session: billing fields as /incoming-call would set them (e.g. a 60-second trial)
   if (session) Object.assign(callStore.getOrCreate("CAtest"), session);
@@ -131,10 +152,11 @@ async function startCall({ routerMode, weatherDelayMs, webSearch, fxError, rates
     logger: logs ? { ...silent, info: (fields, msg) => logs.push([fields, msg]) } : silent,
     openaiApiKey: "test",
     ...services,
-    twilioClient: null,
+    twilioClient,
     latencyMetricsEnabled: false,
     routerMode,
     toolDeadlineMs: 1000,
+    ...(timeWarningSeconds ? { timeWarningSeconds } : {}),
     realtimeUrl: `ws://127.0.0.1:${server.address().port}`,
   });
   const twilio = new FakeTwilio();
@@ -145,6 +167,7 @@ async function startCall({ routerMode, weatherDelayMs, webSearch, fxError, rates
   const call = {
     received,
     calls,
+    callStore,
     creates: () => received.filter((m) => m.type === "response.create"),
     emit: (ev) => sock.send(JSON.stringify(ev)),
     async completeLast(output = []) {
@@ -208,7 +231,7 @@ const weatherCall = (callId, args) => ({
     const c = await startCall({ routerMode: "regex" });
     await c.say("What's the weather in Bogota?");
     await waitFor(() => c.creates().length === 2);
-    assert.ok(/18 degrees and foggy/.test(c.creates()[1].response.instructions));
+    assert.ok(/18 degrees Celsius and foggy/.test(c.creates()[1].response.instructions), c.creates()[1].response.instructions);
     c.close();
   });
 
@@ -711,6 +734,137 @@ const weatherCall = (callId, args) => ({
     await sleep(50);
     assert.strictEqual(c.creates().length, 2);
     assert.strictEqual(c.received.filter((m) => m.type === "conversation.item.create").length, 0);
+    c.close();
+  });
+
+  // ---- Production log 2026-10-28 (regex mode) ----
+  const instr = (c, i) => c.creates()[i].response.instructions;
+  /** Next fast-path reply after the previous one finished. */
+  async function ask(c, text) {
+    const before = c.creates().length;
+    await c.say(text);
+    await waitFor(() => c.creates().length === before + 1);
+    const r = instr(c, before);
+    await c.completeLast([]);
+    return r;
+  }
+
+  await check("regex mode: fast-path replies tell the model not to promise a lookup or ask them to hold", async () => {
+    const c = await startCall({ routerMode: "regex" });
+    const r = await ask(c, "What's the weather in Bogota?");
+    const head = r.split(":")[0];
+    assert.ok(/don't say you'll check/i.test(head) && /hold/i.test(head), r);
+    c.close();
+  });
+
+  await check("regex mode: chat turns also forbid 'let me check' / 'hold on'", async () => {
+    const c = await startCall({ routerMode: "regex" });
+    const r = await ask(c, "Excuse me, sorry, are you there?");
+    assert.ok(/^Reply in English only/.test(r) && /don't say you'll check/i.test(r), r);
+    c.close();
+  });
+
+  await check("regex mode: flights + hotels for a trip → fare for the route and hotels in the destination", async () => {
+    const c = await startCall({ routerMode: "regex", places: true, travel: true });
+    const r = await ask(
+      c,
+      "Okay, that is fantastic. I have plans to travel from Bogota to Miami next Monday. Do you mind if you tell me the prices for the airline tickets and hotels?"
+    );
+    assert.deepStrictEqual(c.calls, [["fare", "BOG", "MIA"], ["hotels", "Miami"]]);
+    assert.ok(/^Reply in English only/.test(r), r);
+    assert.ok(/410 US dollars/.test(r) && /Avianca/.test(r), r);
+    assert.ok(/typical nightly price range/i.test(r) && /Hotel One/.test(r), r);
+    assert.deepStrictEqual(c.creates().at(-1).response.tools, []);
+    c.close();
+  });
+
+  await check("regex mode: 'average price?' right after the trip reuses Bogotá → Miami instead of asking again", async () => {
+    const c = await startCall({ routerMode: "regex", places: true, travel: true });
+    await ask(c, "I have plans to travel from Bogota to Miami next Monday. What are the prices for airline tickets and hotels?");
+    await ask(c, "Excuse me, sorry, are you there?");
+    const r = await ask(c, "Do you mind if you give me an average price or something?");
+    assert.deepStrictEqual(c.calls.filter(([n]) => n === "fare"), [["fare", "BOG", "MIA"], ["fare", "BOG", "MIA"]]);
+    assert.ok(/410 US dollars/.test(r), r);
+    c.close();
+  });
+
+  await check("regex mode: answering 'from and to?' with the route looks the fare up (no guessed price)", async () => {
+    const c = await startCall({ routerMode: "regex", travel: true });
+    const q = await ask(c, "Do you mind if you give me an average price or something?");
+    assert.ok(/flying from/i.test(q), q);
+    const r = await ask(c, "Bogota to Miami leaving on Monday to Friday next week.");
+    assert.deepStrictEqual(c.calls, [["fare", "BOG", "MIA"]]);
+    assert.ok(/410 US dollars/.test(r), r);
+    c.close();
+  });
+
+  await check("regex mode: a route split over turns ('from Milan to…' / 'Rome.') is completed and looked up", async () => {
+    const c = await startCall({ routerMode: "regex", travel: true });
+    const q = await ask(c, "I want to travel from Milan to...");
+    assert.ok(/where/i.test(q) && /Milan/.test(q), q);
+    const r = await ask(c, "Rome.");
+    assert.deepStrictEqual(c.calls, [["fare", "MIL", "FCO"]]);
+    assert.ok(/Milan to Rome/.test(r), r);
+    c.close();
+  });
+
+  await check("regex mode: hotel price follow-up with no city keeps the hotel city and gets a typical price range", async () => {
+    const c = await startCall({ routerMode: "regex", places: true });
+    const first = await ask(c, "Do you mind if you give me the price for my hotel in Miami three nights starting on next Monday?");
+    assert.ok(/typical nightly price range/i.test(first) && /Miami/.test(first), first);
+    const r = await ask(c, "Can you give me a nice average ticket per hotel, like $80 per night, please?");
+    assert.deepStrictEqual(c.calls, [["hotels", "Miami"], ["hotels", "Miami"]]);
+    assert.ok(/^Reply in English only/.test(r) && /typical nightly price range/i.test(r), r);
+    assert.ok(/\$80 per night/.test(r) && /not live/i.test(r), r);
+    c.close();
+  });
+
+  await check("regex mode: a plain hotel list (no price asked) is still the fixed list", async () => {
+    const c = await startCall({ routerMode: "regex", places: true });
+    const r = await ask(c, "What are the best hotels in Miami?");
+    assert.ok(/^Say the following in English only/.test(r) && /Popular hotels in Miami/.test(r), r);
+    c.close();
+  });
+
+  await check("regex mode: hotels with no city anywhere → asks which city; a bare city answers it", async () => {
+    const c = await startCall({ routerMode: "regex", places: true });
+    const q = await ask(c, "Can you find me a hotel?");
+    assert.ok(/^Say the following in English only/.test(q) && /which city/i.test(q), q);
+    assert.deepStrictEqual(c.calls, []);
+    await ask(c, "Miami.");
+    assert.deepStrictEqual(c.calls, [["hotels", "Miami"]]);
+    c.close();
+  });
+
+  await check("regex mode: 'best food to eat in Italy' and feeding a cow go to chat, not a restaurant search", async () => {
+    const c = await startCall({ routerMode: "regex", places: true });
+    assert.ok(/^Reply in /.test(await ask(c, "What is the best food to eat in Italy?")));
+    assert.ok(/^Reply in /.test(await ask(c, "What is the best option to give food to a cow?")));
+    assert.deepStrictEqual(c.calls, []);
+    c.close();
+  });
+
+  await check("transcript holds what Buddy actually said, not the planned fact (and no doubled greeting)", async () => {
+    const c = await startCall({ routerMode: "regex" });
+    c.emit({ type: "response.output_audio_transcript.done", transcript: "Hi! I'm Buddy, your AI friend." });
+    await c.say("What's the weather in Bogota?");
+    await waitFor(() => c.creates().length === 2);
+    c.emit({ type: "response.output_audio_transcript.done", transcript: "It's 18 degrees Celsius and foggy in Bogota." });
+    await sleep(30);
+    c.close();
+    await sleep(10);
+    const lines = c.callStore.get("CAtest").transcriptLines;
+    assert.deepStrictEqual(lines, [
+      "AI: Hi! I'm Buddy, your AI friend.",
+      "Caller: What's the weather in Bogota?",
+      "AI: It's 18 degrees Celsius and foggy in Bogota.",
+    ]);
+  });
+
+  await check("limited call: a short heads-up before the time runs out, while nobody is talking", async () => {
+    const twilioClient = { calls: () => ({ update: async () => {} }) };
+    const c = await startCall({ routerMode: "regex", session: { maxBillableSeconds: 4 }, twilioClient, timeWarningSeconds: 2 });
+    await waitFor(() => c.creates().some((m) => /seconds left/i.test(m.response.instructions)), 3500);
     c.close();
   });
 

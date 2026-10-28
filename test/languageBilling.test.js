@@ -111,6 +111,47 @@ check("yes to the offer switches; no or another question keeps the language", ()
   }
 });
 
+// Production log 2026-10-28: "Yeah, … help me ask the seller … in Chinese?" was taken as yes and flipped the call to Chinese
+check("a translation request after the offer is not a yes", () => {
+  for (const ask of [
+    "Yeah, I want to ask you something. Do you mind if you help me to ask the seller how much is the sweater, red sweater, in Chinese?",
+    "Okay, how do I say thank you in Chinese?",
+    "Sure, can you tell the driver to stop here in Chinese?",
+  ]) {
+    const session = { replyLanguage: "en" };
+    updateReplyLanguage(session, "Do you speak Chinese?");
+    const r = updateReplyLanguage(session, ask);
+    assert.strictEqual(session.replyLanguage, "en", ask);
+    assert.ok(!r.acceptedOffer && !r.changed, ask);
+    assert.strictEqual(explicitLanguageSwitch(ask), null, ask);
+  }
+});
+
+check("a long 'yeah, …' that goes on to something else is not a yes", () => {
+  const session = { replyLanguage: "en" };
+  updateReplyLanguage(session, "Do you speak Spanish?");
+  const r = updateReplyLanguage(session, "Yeah, but first tell me what the weather is like in Miami today");
+  assert.ok(!r.acceptedOffer, JSON.stringify(r));
+  assert.strictEqual(session.replyLanguage, "en");
+});
+
+check("'Do you speak, by any chance, Italian?' is a capability question with an offer", () => {
+  for (const t of ["Do you, do you have, do you speak by any chance Italian?", "Can you also speak German?", "Do you speak a little Arabic?"]) {
+    const session = { replyLanguage: "en" };
+    const r = updateReplyLanguage(session, t);
+    assert.ok(r.offer, t);
+    assert.strictEqual(session.replyLanguage, "en", t);
+  }
+});
+
+check("Italian is detected, and continuing in Italian after the offer switches", () => {
+  assert.strictEqual(detectLanguage("Mi puoi dire per favore quale è il miglior food to eat in Italia?"), "it");
+  const session = { replyLanguage: "en" };
+  updateReplyLanguage(session, "Do you speak Italian?");
+  updateReplyLanguage(session, "Mi puoi dire per favore quale è il miglior food to eat in Italia?");
+  assert.strictEqual(session.replyLanguage, "it");
+});
+
 check("after the offer, simply continuing in that language switches", () => {
   const session = { replyLanguage: "en" };
   updateReplyLanguage(session, "Do you speak Spanish?");

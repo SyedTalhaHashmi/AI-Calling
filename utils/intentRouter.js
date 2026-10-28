@@ -53,6 +53,44 @@ const CITY_IATA_ENTRIES = [
   ["tokyo", "NRT"],
   ["delhi", "DEL"],
   ["karachi", "KHI"],
+  // Travelpayouts takes city codes too (MIL = all Milan airports)
+  ["milan", "MIL"],
+  ["venice", "VCE"],
+  ["florence", "FLR"],
+  ["naples", "NAP"],
+  ["barcelona", "BCN"],
+  ["lisbon", "LIS"],
+  ["amsterdam", "AMS"],
+  ["frankfurt", "FRA"],
+  ["berlin", "BER"],
+  ["istanbul", "IST"],
+  ["cancun", "CUN"],
+  ["cancún", "CUN"],
+  ["panama city", "PTY"],
+  ["quito", "UIO"],
+  ["guayaquil", "GYE"],
+  ["caracas", "CCS"],
+  ["san juan", "SJU"],
+  ["punta cana", "PUJ"],
+  ["santo domingo", "SDQ"],
+  ["atlanta", "ATL"],
+  ["boston", "BOS"],
+  ["san francisco", "SFO"],
+  ["las vegas", "LAS"],
+  ["seattle", "SEA"],
+  ["fort lauderdale", "FLL"],
+  ["tampa", "TPA"],
+  ["denver", "DEN"],
+  ["montreal", "YUL"],
+  ["vancouver", "YVR"],
+  ["lahore", "LHE"],
+  ["islamabad", "ISB"],
+  ["mumbai", "BOM"],
+  ["doha", "DOH"],
+  ["singapore", "SIN"],
+  ["bangkok", "BKK"],
+  ["hong kong", "HKG"],
+  ["sydney", "SYD"],
 ].sort((a, b) => b[0].length - a[0].length);
 
 const KNOWN_IATA = new Set(CITY_IATA_ENTRIES.map(([, code]) => code));
@@ -72,14 +110,40 @@ function hasPhrase(text, phrase) {
   return new RegExp(`\\b${escapeRegex(p)}\\b`, "i").test(t);
 }
 
+/** Index of a city name as a whole word (accent-safe), or -1: "climate" is not Lima, "California" is not Cali. */
+function cityIndex(lower, city) {
+  const m = new RegExp(`(?<![\\p{L}])${escapeRegex(city)}(?![\\p{L}])`, "u").exec(lower);
+  return m ? m.index : -1;
+}
+
 function isHotelQuestion(text) {
   return /\b(hotel|hotels|stay|accommodation|room price|hotel price)\b/i.test(text || "");
 }
 
-function isFoodQuestion(text) {
-  return /\b(food|restaurant|restaurants|eat|dining|best food|best restaurant)\b/i.test(
-    text || ""
+/** Hotel prices can't be looked up (Places has names and ratings only), so these get an honest answer. */
+function isHotelPriceQuestion(text) {
+  const t = text || "";
+  return (
+    isHotelQuestion(t) &&
+    /(\$|\b(price|prices|cost|costs|rate|rates|cheap|cheapest|how much|per night|a night|average|budget|dollars?|euros?)\b)/i.test(t)
   );
+}
+
+/** Finding somewhere to eat — not any sentence with "food" or "eat" in it. */
+function isFoodQuestion(text) {
+  const t = text || "";
+  return (
+    /\b(restaurants?|dining|diner|caf[eé]s?|restaurantes?)\b/i.test(t) ||
+    /\b(places?|somewhere|spots?) to eat\b/i.test(t) ||
+    /\bwhere (?:to|can|could|should|do|would) (?:i |we |you )?(?:go )?(?:eat|get food|grab (?:a bite|food))\b/i.test(t) ||
+    /\b(?:eat|food) (?:near|around) (?:me|here)\b/i.test(t) ||
+    /\bd[oó]nde comer\b/i.test(t)
+  );
+}
+
+/** The ask is (also) about flying: "prices for the airline tickets and hotels". */
+function mentionsFlights(text) {
+  return /\b(flights?|fly|flying|airfare|fares?|airline|plane|tickets?|vuelos?|tiquetes?|boletos?|pasajes?)\b/i.test(text || "");
 }
 
 function isLocalServiceQuestion(text) {
@@ -97,23 +161,40 @@ function isLocalServiceQuestion(text) {
   );
 }
 
-function extractRouteFromCityNames(text) {
+/**
+ * Known cities in the text, by role: after "from" / "desde" → from; after "to" / "a" / "para" → to;
+ * the rest in spoken order. "flights to Miami from Bogota" → { from: BOG, to: MIA }.
+ */
+function extractRouteParts(text) {
   const lower = (text || "").toLowerCase();
   const hits = [];
   for (const [city, code] of CITY_IATA_ENTRIES) {
-    const idx = lower.indexOf(city);
-    if (idx !== -1) hits.push({ idx, code });
+    const idx = cityIndex(lower, city);
+    // Longest names first, so "san juan" is not also counted inside a longer name
+    if (idx !== -1 && !hits.some((h) => idx >= h.idx && idx < h.end)) {
+      hits.push({ idx, end: idx + city.length, code });
+    }
   }
   hits.sort((a, b) => a.idx - b.idx);
-  const codes = [];
   const seen = new Set();
-  for (const h of hits) {
-    if (seen.has(h.code)) continue;
-    seen.add(h.code);
-    codes.push(h.code);
-    if (codes.length >= 2) break;
+  const ordered = hits.filter((h) => !seen.has(h.code) && seen.add(h.code));
+  for (const h of ordered) {
+    const before = lower.slice(Math.max(0, h.idx - 12), h.idx);
+    if (/\b(?:from|desde|de)\s+$/.test(before)) h.cue = "from";
+    else if (/\b(?:to|into|a|para|hacia|hasta)\s+$/.test(before)) h.cue = "to";
   }
-  return { origin: codes[0] || null, destination: codes[1] || null };
+  const from = ordered.find((h) => h.cue === "from")?.code || null;
+  const to = ordered.find((h) => h.cue === "to" && h.code !== from)?.code || null;
+  const others = ordered.map((h) => h.code).filter((c) => c !== from && c !== to);
+  return { from, to, others };
+}
+
+function extractRouteFromCityNames(text) {
+  const { from, to, others } = extractRouteParts(text);
+  const rest = [...others];
+  const origin = from || rest.shift() || null;
+  const destination = to || rest.shift() || null;
+  return { origin, destination };
 }
 
 function isTravelPriceQuestion(text) {
@@ -136,13 +217,18 @@ function isTravelPriceQuestion(text) {
     /\b(recommend|suggest)\s+.*\b(ticket|flight)\b/i.test(t) ||
     /\bprice of (the |a )?ticket\b/i.test(t) ||
     /\bticket\s+(prize|price|cost|fare)\b/i.test(t) ||
-    /\b(whats|what's|what is)\s+(the\s+)?ticket\b/i.test(t)
+    /\b(whats|what's|what is)\s+(the\s+)?ticket\b/i.test(t) ||
+    /\b(airline|plane|flight)\s+tickets?\b/i.test(t)
   ) {
     return true;
   }
   if (/\b(travel|travelling|traveling|trip|fly|flight)\b/i.test(t)) {
-    const route = extractRouteFromCityNames(t);
-    if (route.origin && route.destination) return true;
+    const route = extractRouteParts(t);
+    const cities = [route.from, route.to, ...route.others].filter(Boolean);
+    if (cities.length >= 2) return true;
+    // Half a route ("I want to travel from Milan to…") — the missing end is asked for.
+    // "Flying to Miami tomorrow, will it rain?" stays a weather question.
+    if (route.from && !/\b(weather|rain|raining|temperature|forecast|hot|cold)\b/i.test(t)) return true;
   }
   return false;
 }
@@ -337,7 +423,7 @@ function extractLocation(text) {
     const after = lower.slice(lodgingIdx);
     const origAfter = t.slice(lodgingIdx);
     for (const [city] of CITY_IATA_ENTRIES) {
-      const idx = after.indexOf(city);
+      const idx = cityIndex(after, city);
       if (idx !== -1) {
         return origAfter.slice(idx, idx + city.length);
       }
@@ -346,8 +432,8 @@ function extractLocation(text) {
 
   // Prefer known city names when present (most reliable for speech)
   for (const [city] of CITY_IATA_ENTRIES) {
-    if (lower.includes(city)) {
-      const idx = lower.indexOf(city);
+    const idx = cityIndex(lower, city);
+    if (idx !== -1) {
       return t.slice(idx, idx + city.length);
     }
   }
@@ -406,7 +492,7 @@ function extractCityAndCountry(text, placeHint) {
   // Fallback: known city name mentioned in a weather ask ("is Paris hot")
   const lower = String(text || "").toLowerCase();
   for (const [city] of CITY_IATA_ENTRIES) {
-    if (lower.includes(city)) {
+    if (cityIndex(lower, city) !== -1) {
       return [
         {
           city: city.replace(/\b\w/g, (c) => c.toUpperCase()),
@@ -469,9 +555,12 @@ module.exports = {
   isNewsQuestion,
   isExchangeQuestion,
   isFoodQuestion,
+  isHotelPriceQuestion,
+  mentionsFlights,
   isLocalServiceQuestion,
   extractTravelRoute,
   extractRouteIata,
+  extractRouteParts,
   extractRouteFromCityNames,
   extractLocation,
   extractCityAndCountry,

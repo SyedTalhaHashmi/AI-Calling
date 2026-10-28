@@ -14,6 +14,11 @@ const LANG_NAMES = {
   ja: "Japanese",
   yi: "Yiddish",
   he: "Hebrew",
+  it: "Italian",
+  de: "German",
+  ar: "Arabic",
+  ko: "Korean",
+  ru: "Russian",
 };
 
 function wordCount(text) {
@@ -42,16 +47,30 @@ const LANGUAGE_WORDS = {
   japanese: "ja",
   yiddish: "yi",
   hebrew: "he",
+  italian: "it",
+  italiano: "it",
+  german: "de",
+  deutsch: "de",
+  arabic: "ar",
+  korean: "ko",
+  russian: "ru",
 };
 const LANGUAGE_WORD_RE = Object.keys(LANGUAGE_WORDS).join("|");
 
-/** "How do you say … in Spanish?" — about a language, not a request to speak it. */
+/**
+ * "How do you say … in Spanish?" / "help me ask the seller … in Chinese" — about a language,
+ * not a request to speak it.
+ */
 const TRANSLATION_ASK = new RegExp(
-  `\\b(how (do|would|can|could) (you|i|we) say|how to say|translate|translation|what does .+ mean|what(?:'s| is) .+ in (?:${LANGUAGE_WORD_RE}))(?![\\p{L}])`,
+  `\\b(how (do|would|can|could) (you|i|we) say|how to say|translate|translation|what does .+ mean|what(?:'s| is) .+ in (?:${LANGUAGE_WORD_RE})` +
+    // Words for someone else ("ask the seller…", "say this…"); "tell me in Spanish" is still a switch
+    `|(?:say|ask|tell|write|order)\\s+(?:the|him|her|them|my|your|a|an|someone|somebody|people|this|that|to)\\b.+\\bin (?:${LANGUAGE_WORD_RE}))(?![\\p{L}])`,
   "iu"
 );
 const CAPABILITY_ASK = new RegExp(
-  `\\b(?:(?:do|can|could) you (?:also |even )?(?:speak|understand|know)|if you (?:can|could) speak|are you able to speak)\\s+(${LANGUAGE_WORD_RE})(?![\\p{L}])`,
+  `\\b(?:(?:do|can|could) you (?:also |even )?(?:speak|understand|know)|if you (?:can|could) speak|are you able to speak)` +
+    // "do you speak, by any chance, Italian?" / "a little Arabic"
+    `(?:,?\\s+(?:by any chance|also|even|perhaps|maybe|any|some|a little|a bit of)\\b,?)*\\s+(${LANGUAGE_WORD_RE})(?![\\p{L}])`,
   "iu"
 );
 /** "Can you speak Spanish please?" / "…switch to Spanish" — a question that is really a request. */
@@ -114,6 +133,8 @@ function detectLanguage(text) {
   if (/[\u0600-\u06FF]/.test(raw)) return "ur";
   if (/[\u4e00-\u9fff]/.test(raw)) return "zh";
   if (/[\u3040-\u30ff]/.test(raw)) return "ja";
+  if (/[\uac00-\ud7af]/.test(raw)) return "ko";
+  if (/[\u0400-\u04ff]/.test(raw)) return "ru";
   // Hebrew alphabet (also used for Yiddish text) — treat as Hebrew unless session already locked Yiddish
   if (/[\u0590-\u05FF]/.test(raw)) return "he";
 
@@ -144,6 +165,12 @@ function detectLanguage(text) {
   ) {
     return "pt";
   }
+  if (/\b(ciao|grazie|per favore|puoi|vorrei|buongiorno|buonasera|italiano|quale|miglior[ei]?|perch[eé])(?![\p{L}])/iu.test(t)) {
+    return "it";
+  }
+  if (/\b(danke|bitte|guten (tag|morgen|abend)|sprechen sie|deutsch|ich (bin|habe|m[oö]chte))\b/i.test(t)) {
+    return "de";
+  }
   if (
     words >= 3 &&
     /\b(the|you|what|how|please|english|thanks|thank|would|could|about|with|this|that|have|from|want)\b/i.test(
@@ -169,7 +196,14 @@ function updateReplyLanguage(session, userText) {
   const offered = session.languageOffer;
   if (offered) {
     session.languageOffer = null;
-    if (AFFIRMATIVE.test(String(userText || "")) && !/^\s*no\b/i.test(String(userText || ""))) {
+    const answer = String(userText || "");
+    // "Yeah, I want to ask you something… in Chinese?" goes on to a new request: not a yes
+    const isYes =
+      AFFIRMATIVE.test(answer) &&
+      !/^\s*no\b/i.test(answer) &&
+      !TRANSLATION_ASK.test(answer) &&
+      (wordCount(answer) <= 6 || REQUEST_CUE.test(answer));
+    if (isYes) {
       session.replyLanguage = offered;
       return { changed: true, language: offered, acceptedOffer: true };
     }

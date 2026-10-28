@@ -10,6 +10,9 @@ const {
   extractRouteIata,
   extractLocation,
   extractCityAndCountry,
+  extractRouteParts,
+  isHotelPriceQuestion,
+  mentionsFlights,
   hasPhrase,
 } = require("../utils/intentRouter");
 
@@ -251,6 +254,45 @@ check("stock market hours are a schedule question (chat), not a ticker lookup", 
   assert.strictEqual(resolveIntent("Is the stock market open today?"), "chat");
   assert.strictEqual(resolveIntent("When does the stock market close?"), "chat");
   assert.strictEqual(resolveIntent("What is Apple stock at?"), "stocks");
+});
+
+// Production log 2026-10-28: routing misses and false matches
+check("city names match whole words only (climate ≠ Lima, California ≠ Cali)", () => {
+  assert.deepStrictEqual(extractTravelRoute("Is the Bogota climate nice for a trip?"), { origin: "BOG", destination: null });
+  assert.ok(!/^cali$/i.test(extractLocation("best hotels in California")), extractLocation("best hotels in California"));
+});
+
+check("'from' / 'to' decide the route direction, whatever the word order", () => {
+  assert.deepStrictEqual(extractTravelRoute("flights to Miami from Bogota"), { origin: "BOG", destination: "MIA" });
+  assert.deepStrictEqual(extractTravelRoute("Bogota to Miami leaving on Monday"), { origin: "BOG", destination: "MIA" });
+  assert.deepStrictEqual(extractRouteParts("I want to travel from Milan to..."), { from: "MIL", to: null, others: [] });
+  assert.deepStrictEqual(extractRouteParts("Rome."), { from: null, to: null, others: ["FCO"] });
+});
+
+check("half a route or a bare 'airline tickets' ask is a fare question", () => {
+  assert.strictEqual(resolveIntent("I want to travel from Milan to..."), "travel_price");
+  assert.strictEqual(resolveIntent("Yeah, what about airline tickets?"), "travel_price");
+});
+
+check("food intent only for finding restaurants, not any mention of food", () => {
+  assert.strictEqual(resolveIntent("Mi puoi dire per favore quale è il miglior food to eat in Italia?"), "chat");
+  assert.strictEqual(resolveIntent("what is the best option to give food to a cow?"), "chat");
+  assert.strictEqual(resolveIntent("best restaurants in Miami"), "food");
+  assert.strictEqual(resolveIntent("Where can I eat in Medellin?"), "food");
+  assert.strictEqual(resolveIntent("Any good places to eat in Miami?"), "food");
+});
+
+check("hotel price asks are told apart from hotel lists", () => {
+  assert.strictEqual(isHotelPriceQuestion("Can you give me a nice average ticket per hotel, like $80 per night, please?"), true);
+  assert.strictEqual(isHotelPriceQuestion("Give me the price for my hotel in Miami three nights"), true);
+  assert.strictEqual(isHotelPriceQuestion("What are the best hotels in Miami?"), false);
+});
+
+check("a trip ask that mentions flights is recognised next to hotels", () => {
+  const t = "I have plans to travel from Bogota to Miami next Monday. Do you mind if you tell me the prices for the airline tickets and hotels?";
+  assert.strictEqual(resolveIntent(t), "hotel");
+  assert.strictEqual(mentionsFlights(t), true);
+  assert.strictEqual(mentionsFlights("best hotels in Miami"), false);
 });
 
 if (process.exitCode) {

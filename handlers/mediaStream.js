@@ -26,25 +26,48 @@ const {
 } = require("../utils/replyLanguage");
 const {
   isBillingQuestion,
+  isPlanCatalogQuestion,
   billingReply,
   billingInstruction,
 } = require("../utils/billingReply");
+const { createTurnMetrics } = require("../utils/turnMetrics");
+const {
+  buildToolDefinitions,
+  createToolExecutor,
+  collectFunctionCalls,
+  runToolCalls,
+  toolResultLogFields,
+  carriedOverPlace,
+  askForPlace,
+  fetchWeatherForPlace,
+  fetchWeatherForPlaces,
+  TOOLS_SESSION_RULES,
+  WEB_SEARCH_SESSION_RULE,
+  toolsTurnInstruction,
+  toolsFollowUpInstruction,
+  toolChoiceAgreement,
+} = require("./realtimeTools");
 
 const OPENAI_REALTIME_URL = "wss://api.openai.com/v1/realtime?model=gpt-realtime";
+/** Tools mode: after this many tool rounds in one turn, the follow-up must speak (tools: []). */
+const MAX_TOOL_ROUNDS = 2;
 
 // Short, warm greeting — then stop and listen (no long intros)
 const GREETING = "Hi! I'm Buddy, your AI friend. Ask me anything you want.";
 // Friendly voice: marin (female); alternatives: coral, shimmer, sage
 const VOICE = "marin";
 
-function buildRealtimeInstructions(session) {
-  return [
+function buildRealtimeInstructions(session, { toolsMode = false, webSearch = false } = {}) {
+  const parts = [
     SYSTEM_PROMPT,
     "",
     "## Active call rules (authoritative — follow these)",
     languageInstruction(session),
     billingInstruction(session),
-  ].join("\n");
+  ];
+  if (toolsMode) parts.push("", TOOLS_SESSION_RULES);
+  if (toolsMode && webSearch) parts.push(WEB_SEARCH_SESSION_RULE);
+  return parts.join("\n");
 }
 
 /** Realtime input: denoise, then semantic turn detection (ChatGPT-like; waits on fillers / incomplete thoughts). */
@@ -153,18 +176,6 @@ function formatWeatherFact(result) {
   return `${result.temp} degrees and ${result.description} in ${where}${humidity}`;
 }
 
-async function fetchWeatherForPlace(place, openMeteoService, weatherService) {
-  const city = place.city;
-  const country = place.country;
-  if (openMeteoService?.enabled) {
-    return openMeteoService.getByCity(city, country);
-  }
-  if (weatherService?.enabled) {
-    return weatherService.getByCity(city, country);
-  }
-  return { error: "Weather not configured." };
-}
-
 const TIME_UP_INSTRUCTION =
   "Say exactly: Your time for this call is up. To keep talking, subscribe or add minutes at buddycallai dot com. Goodbye.";
 
@@ -183,9 +194,52 @@ function createMediaStreamHandler({
   sportsService,
   flightsService,
   stocksService,
+  /** Tools mode only (never offered or called by the regex router). */
+  webSearchService,
   twilioClient,
+  latencyMetricsEnabled = true,
+  /** "regex" (default, existing fast paths) or "tools" (model picks existing-service tools). */
+  routerMode = "regex",
+  toolDeadlineMs = 2500,
+  realtimeUrl = OPENAI_REALTIME_URL,
 }) {
+  const toolsMode = routerMode === "tools";
+  const toolServices = {
+    weatherService,
+    openMeteoService,
+    timeService,
+    worldTimeService,
+    placesService,
+    travelService,
+    newsService,
+    fxService,
+    sportsService,
+    flightsService,
+    stocksService,
+    webSearchService,
+  };
+  const toolDefinitions = toolsMode ? buildToolDefinitions(toolServices) : [];
+  const webSearchOffered = toolDefinitions.some((t) => t.name === "web_search");
+  const toolExecutor = toolsMode
+    ? createToolExecutor({ services: toolServices, logger, deadlineMs: toolDeadlineMs })
+    : null;
+
+  /** Session tool config: tools mode → all enabled tools; regex mode → unchanged legacy weather tool. */
+  function sessionToolFields() {
+    if (toolsMode) return { tools: toolDefinitions, tool_choice: "auto" };
+    if (weatherService && weatherService.enabled) {
+      return { tools: [WEATHER_TOOL], tool_choice: "auto" };
+    }
+    return {};
+  }
+
   return function handleMediaStream(twilioWs, req) {
+    /** Logging-only latency metrics; never affects call flow. */
+    const metrics = createTurnMetrics({ logger, enabled: latencyMetricsEnabled });
+    /** Tools mode: client_gen of a model turn → { turnId, regexIntent, rounds, callerText, earlierCallerTexts, webSearch }. */
+    const toolTurns = new Map();
+    /** Bumped whenever the caller starts speaking; stale tool results are not spoken. */
+    let userSpeechSeq = 0;
     let callSid = null;
     let streamSid = null;
     let openaiWs = null;
@@ -212,8 +266,9 @@ function createMediaStreamHandler({
       return expectedGeneration;
     }
 
-    function createResponsePayload(responseFields) {
+    function createResponsePayload(responseFields, metricsTurnId) {
       const gen = markResponseCreateSent();
+      metrics.onResponseCreateSent(metricsTurnId, gen);
       return {
         type: "response.create",
         response: {
@@ -243,7 +298,87 @@ function createMediaStreamHandler({
       }
     }
 
+    /**
+     * Tools mode: run every function call in a finished model response (in parallel),
+     * return outputs, then ask for the spoken answer — unless the caller spoke meanwhile.
+     */
+    function handleToolsResponse(response, metricsTurnId) {
+      const gen = String(response?.metadata?.client_gen ?? "");
+      const toolTurn = toolTurns.get(gen) || null;
+      toolTurns.delete(gen);
+      const calls = collectFunctionCalls(response);
+      const toolNames = calls.map((c) => c.name);
+      if (toolTurn && toolTurn.rounds === 0) {
+        logger.info(
+          {
+            callSid,
+            regexIntent: toolTurn.regexIntent,
+            tools: toolNames,
+            agreement: toolChoiceAgreement(toolTurn.regexIntent, toolNames),
+          },
+          "Tool choice"
+        );
+      }
+      if (!calls.length) return;
+
+      const rounds = (toolTurn?.rounds || 0) + 1;
+      const speechSeqAtStart = userSpeechSeq;
+      (async () => {
+        const outputs = await runToolCalls(calls, toolExecutor, {
+          timed: (label, fn) => metrics.time(metricsTurnId, label, fn),
+          // A city from an earlier request is not searched unless the caller is continuing that topic
+          guard: (name, args) => {
+            const place = carriedOverPlace(name, args, {
+              latest: toolTurn?.callerText || "",
+              earlier: toolTurn?.earlierCallerTexts || [],
+            });
+            if (!place) return null;
+            logger.info({ callSid, tool: name, place }, "Tool not run: place only named in an earlier request");
+            return askForPlace(place);
+          },
+        });
+        if (!openaiWs || openaiWs.readyState !== WebSocket.OPEN) return;
+        for (const o of outputs) {
+          openaiWs.send(
+            JSON.stringify({
+              type: "conversation.item.create",
+              item: { type: "function_call_output", call_id: o.call_id, output: o.output },
+            })
+          );
+          logger.info({ callSid, tool: o.name, ...toolResultLogFields(o.name, o.args, o.result) }, "Tool result");
+        }
+        metrics.onToolResultsSent(metricsTurnId);
+
+        if (userSpeechSeq !== speechSeqAtStart || callStore.get(callSid)?.callEnding) {
+          logger.info({ callSid }, "Tool answer not spoken: caller spoke or call ending");
+          metrics.finishWithoutReply(metricsTurnId, "interrupted_during_tool");
+          return;
+        }
+        if (responseInProgress) {
+          logger.info({ callSid }, "Tool answer skipped: response already in progress");
+          metrics.finishWithoutReply(metricsTurnId, "skipped_busy");
+          return;
+        }
+        const langName = languageLabel(callStore.get(callSid)?.replyLanguage || "en");
+        // Web results earlier in this turn still need source / conflict handling in a later round
+        const webSearch = Boolean(toolTurn?.webSearch) || outputs.some((o) => o.name === "web_search");
+        const fields = { instructions: toolsFollowUpInstruction(langName, { webSearch }) };
+        // Cap tool rounds: last follow-up must speak, not call more tools
+        if (rounds >= MAX_TOOL_ROUNDS) fields.tools = [];
+        const payload = createResponsePayload(fields, metricsTurnId);
+        toolTurns.set(String(payload.response.metadata.client_gen), {
+          ...(toolTurn || { regexIntent: null }),
+          rounds,
+          webSearch,
+        });
+        openaiWs.send(JSON.stringify(payload));
+      })().catch((err) => {
+        logger.error({ callSid, err: err.message }, "Tools turn failed");
+      });
+    }
+
     const cleanup = () => {
+      metrics.flush();
       if (timeLimitTimer) {
         clearInterval(timeLimitTimer);
         timeLimitTimer = null;
@@ -269,6 +404,7 @@ function createMediaStreamHandler({
       if (msg.event === "start") {
         callSid = msg.start?.callSid || msg.callSid;
         streamSid = msg.start?.streamSid || msg.streamSid;
+        metrics.setCallSid(callSid);
         callStore.getOrCreate(callSid);
         callStore.addAssistantMessage(callSid, GREETING);
         transcriptLines.push(`AI: ${GREETING}`);
@@ -297,10 +433,13 @@ function createMediaStreamHandler({
                 if (openaiWs && openaiWs.readyState === WebSocket.OPEN) {
                   openaiWs.send(
                     JSON.stringify(
-                      createResponsePayload({
-                        instructions: TIME_UP_INSTRUCTION,
-                        tools: [],
-                      })
+                      createResponsePayload(
+                        {
+                          instructions: TIME_UP_INSTRUCTION,
+                          tools: [],
+                        },
+                        metrics.beginSystemTurn("time_up")
+                      )
                     )
                   );
                 }
@@ -319,7 +458,7 @@ function createMediaStreamHandler({
         }
 
         // Connect to OpenAI Realtime
-        openaiWs = new WebSocket(OPENAI_REALTIME_URL, {
+        openaiWs = new WebSocket(realtimeUrl, {
           headers: {
             Authorization: `Bearer ${openaiApiKey}`,
           },
@@ -333,28 +472,28 @@ function createMediaStreamHandler({
           }
           const session = {
             type: "realtime",
-            instructions: buildRealtimeInstructions(billSession),
+            instructions: buildRealtimeInstructions(billSession, { toolsMode, webSearch: webSearchOffered }),
             audio: {
               input: REALTIME_INPUT_AUDIO,
               output: {
                 voice: VOICE,
               },
             },
+            ...sessionToolFields(),
           };
-          if (weatherService && weatherService.enabled) {
-            session.tools = [WEATHER_TOOL];
-            session.tool_choice = "auto";
-          }
           openaiWs.send(
             JSON.stringify({ type: "session.update", session })
           );
           // Say greeting once, then stop and listen
           openaiWs.send(
             JSON.stringify(
-              createResponsePayload({
-                instructions: `Say exactly: ${GREETING}`,
-                tools: [],
-              })
+              createResponsePayload(
+                {
+                  instructions: `Say exactly: ${GREETING}`,
+                  tools: [],
+                },
+                metrics.beginSystemTurn("greeting")
+              )
             )
           );
         });
@@ -384,32 +523,34 @@ function createMediaStreamHandler({
             const sess = callStore.get(callSid);
             const payload = {
               type: "realtime",
-              instructions: buildRealtimeInstructions(sess),
+              instructions: buildRealtimeInstructions(sess, { toolsMode, webSearch: webSearchOffered }),
+              ...sessionToolFields(),
             };
-            if (weatherService && weatherService.enabled) {
-              payload.tools = [WEATHER_TOOL];
-              payload.tool_choice = "auto";
-            }
             openaiWs.send(
               JSON.stringify({ type: "session.update", session: payload })
             );
           }
 
-          function sendReply(reply, opts = {}) {
+          function sendReplyBase(reply, opts = {}) {
             if (responseInProgress) {
               logger.info({ callSid }, "Skip fast-path: response already in progress");
+              metrics.finishWithoutReply(opts.turnId, "skipped_busy");
               return;
             }
             const sess = callStore.get(callSid);
             const langName = languageLabel(sess?.replyLanguage || "en");
             const instruction =
               opts.multilingual !== false
-                ? `Say the following in ${langName} only, one short sentence (15 to 20 words max): ${reply}.`
-                : `Say exactly: ${reply}`;
+                ? `Say the following in ${langName} only, ${
+                    opts.maxWords
+                      ? `in up to ${opts.maxWords} words, keeping every name and number`
+                      : "one short sentence (15 to 20 words max)"
+                  }: ${reply}${/[.?!]$/.test(reply) ? "" : "."}`
+                : `Say only the quoted sentence, word for word, with no other facts or numbers: "${reply}"`;
             // No tools on fast-path replies — prevents double weather/hotel answers
             openaiWs.send(
               JSON.stringify(
-                createResponsePayload({ instructions: instruction, tools: [] })
+                createResponsePayload({ instructions: instruction, tools: [] }, opts.turnId)
               )
             );
             callStore.addAssistantMessage(callSid, reply);
@@ -418,12 +559,22 @@ function createMediaStreamHandler({
             logger.info({ callSid, reply, role: "assistant" }, `AI: ${aiReplyLog}`);
           }
 
-          function handleUserTranscript(text) {
+          function handleUserTranscript(text, turnId) {
+            // Metrics helpers bound to this turn (pass results through unchanged)
+            const sendReply = (reply, opts = {}) => sendReplyBase(reply, { ...opts, turnId });
+            const timed = (label, fn) => metrics.time(turnId, label, fn);
+
             const trimmed = (text != null && text !== "" ? String(text).trim() : "");
-            if (!trimmed) return;
+            if (!trimmed) {
+              metrics.finishWithoutReply(turnId, "empty");
+              return;
+            }
             const userLog = trimmed.length > 100 ? trimmed.slice(0, 100) + "…" : trimmed;
             logger.info({ callSid, transcript: trimmed, role: "user" }, `USER: ${userLog}`);
-            if (trimmed === lastUserTranscript) return;
+            if (trimmed === lastUserTranscript) {
+              metrics.finishWithoutReply(turnId, "duplicate");
+              return;
+            }
             lastUserTranscript = trimmed;
             transcriptLines.push(`Caller: ${trimmed}`);
             callStore.addUserMessage(callSid, trimmed);
@@ -431,16 +582,13 @@ function createMediaStreamHandler({
             const sessionRef = callStore.get(callSid);
             if (sessionRef?.callEnding) {
               logger.info({ callSid }, "Skip turn: call ending (time limit)");
+              metrics.finishWithoutReply(turnId, "call_ending");
               return;
             }
 
             interruptAgentPlayback();
 
-            if (shouldDeferUserTurn(trimmed)) {
-              logger.info({ callSid, transcript: trimmed }, "Skip turn: user holding floor");
-              return;
-            }
-
+            // Before the backchannel check: a bare "Yes" may be accepting a language offer
             const langUpdate = updateReplyLanguage(sessionRef, trimmed);
             if (langUpdate.changed) {
               logger.info(
@@ -449,16 +597,76 @@ function createMediaStreamHandler({
               );
               syncSessionInstructions();
             }
-
-            // Honest trial / plan answers — never invent unlimited free time
-            if (isBillingQuestion(trimmed)) {
-              const fact = billingReply(sessionRef);
-              sendReply(fact, { multilingual: true });
+            if (langUpdate.acceptedOffer) {
+              metrics.setRoute(turnId, "language");
+              const name = languageLabel(langUpdate.language);
+              sendReply(`Sure, I'll speak ${name} from now on. How can I help you?`, { multilingual: true });
+              return;
+            }
+            // "Do you speak Spanish?" — answer and offer in the current language; switch only on yes
+            if (langUpdate.offer) {
+              metrics.setRoute(turnId, "language");
+              const name = languageLabel(langUpdate.offer);
+              sendReply(`Yes, I can speak ${name}. Would you like me to switch to ${name}?`, { multilingual: true });
               return;
             }
 
-            const intent = resolveIntent(trimmed);
+            if (shouldDeferUserTurn(trimmed)) {
+              logger.info({ callSid, transcript: trimmed }, "Skip turn: user holding floor");
+              metrics.setRoute(turnId, "deferred");
+              metrics.finishWithoutReply(turnId, "deferred");
+              return;
+            }
+
+            // Honest trial / plan answers — never invent unlimited free time
+            if (isBillingQuestion(trimmed)) {
+              metrics.setRoute(turnId, "billing");
+              const fact = billingReply(sessionRef, trimmed);
+              // The plan list runs ~50 words; a 20-word cap would drop plans or prices
+              sendReply(fact, { multilingual: true, maxWords: isPlanCatalogQuestion(trimmed) ? 60 : undefined });
+              return;
+            }
+
+            // Tools mode: the model picks an existing-service tool (or answers directly).
+            // Regex intent is computed only for the shadow agreement log.
+            if (toolsMode) {
+              const regexIntent = resolveIntent(trimmed);
+              metrics.setRoute(turnId, "tools", regexIntent);
+              if (openaiWs?.readyState !== WebSocket.OPEN) return;
+              if (responseInProgress) {
+                logger.info({ callSid }, "Skip tools turn: response already in progress");
+                metrics.finishWithoutReply(turnId, "skipped_busy");
+                return;
+              }
+              const langName = languageLabel(sessionRef?.replyLanguage || "en");
+              const payload = createResponsePayload(
+                { instructions: toolsTurnInstruction(langName) },
+                turnId
+              );
+              const callerTexts = transcriptLines
+                .filter((l) => l.startsWith("Caller: "))
+                .map((l) => l.slice("Caller: ".length));
+              toolTurns.set(String(payload.response.metadata.client_gen), {
+                turnId,
+                regexIntent,
+                rounds: 0,
+                // For the location guard (this request vs earlier ones)
+                callerText: trimmed,
+                earlierCallerTexts: callerTexts.slice(0, -1),
+              });
+              openaiWs.send(JSON.stringify(payload));
+              return;
+            }
+
+            // Last turn asked "Which city?" for the time — a bare place name answers it
+            const awaitingTimeCity = Boolean(sessionRef?.awaitingTimeCity);
+            if (sessionRef) sessionRef.awaitingTimeCity = false;
+            let intent = resolveIntent(trimmed);
+            if (awaitingTimeCity && intent === "chat" && timeService?.resolvePlace(trimmed)) {
+              intent = "time";
+            }
             logger.info({ callSid, intent }, "Intent resolved");
+            metrics.setRoute(turnId, "fast_path", intent);
 
             // Weather-only place memory — do not leak Colombia hint onto hotel/Miami asks
             if (intent === "weather") {
@@ -481,19 +689,20 @@ function createMediaStreamHandler({
               const places = extractCityAndCountry(trimmed, sessionRef?.placeHint);
               (async () => {
                 try {
+                  // All places at once; facts keep the spoken order
+                  const results = await fetchWeatherForPlaces(places, (place) =>
+                    timed("weather", () =>
+                      fetchWeatherForPlace(place, openMeteoService, weatherService)
+                    )
+                  );
                   const facts = [];
-                  for (const place of places) {
-                    const result = await fetchWeatherForPlace(
-                      place,
-                      openMeteoService,
-                      weatherService
-                    );
-                    facts.push(formatWeatherFact(result));
+                  places.forEach((place, i) => {
+                    facts.push(formatWeatherFact(results[i]));
                     logger.info(
-                      { callSid, city: place.city, country: place.country, result },
+                      { callSid, city: place.city, country: place.country, result: results[i] },
                       "Weather fast path"
                     );
-                  }
+                  });
                   const fact =
                     facts.length > 1
                       ? facts.join(" And ")
@@ -513,25 +722,33 @@ function createMediaStreamHandler({
               return;
             }
             if (intent === "time" && timeService?.enabled) {
-              const tz = timeService.resolveTimezone(trimmed);
+              const place = timeService.resolvePlace(trimmed);
+              // Unknown or missing place: ask — never read out UTC as local time
+              if (!place) {
+                if (sessionRef) sessionRef.awaitingTimeCity = true;
+                sendReply("Which city should I check the time for?", { multilingual: true });
+                return;
+              }
+              const tz = place.timezone;
               (async () => {
-                if (tz && worldTimeService?.enabled) {
-                  const r = await worldTimeService.getTimeByTimezone(tz);
+                if (worldTimeService?.enabled) {
+                  const r = await timed("world_time", () =>
+                    worldTimeService.getTimeByTimezone(tz)
+                  );
                   if (!r.error && r.datetime) {
-                    sendReply(`It is ${new Date(r.datetime).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", hour12: true })} in ${tz.replace(/_/g, " ")}.`, { multilingual: true });
+                    sendReply(`It is ${new Date(r.datetime).toLocaleTimeString("en-US", { timeZone: tz, hour: "numeric", minute: "2-digit", hour12: true })} in ${place.label}.`, { multilingual: true });
                     return;
                   }
                 }
-                const { time, timezone } = timeService.getCurrentTime(tz || undefined);
-                const fact = tz ? `${time} in ${timezone.replace(/_/g, " ")}` : time;
-                sendReply(fact, { multilingual: true });
+                const { time } = timeService.getCurrentTime(tz);
+                sendReply(`${time} in ${place.label}`, { multilingual: true });
               })();
               return;
             }
             if (intent === "news" && newsService?.enabled) {
               const topic = extractNewsQuery(trimmed);
               (async () => {
-                const result = await newsService.topHeadlines(topic);
+                const result = await timed("news", () => newsService.topHeadlines(topic));
                 const fact = result.error
                   ? result.error
                   : `Top updates: ${result.articles.map((a) => `${a.title} from ${a.source}`).join(". ")}`;
@@ -545,7 +762,7 @@ function createMediaStreamHandler({
               const base = iso.base || spoken.base;
               const quote = iso.quote || spoken.quote;
               (async () => {
-                const result = await fxService.getRate(base, quote);
+                const result = await timed("fx", () => fxService.getRate(base, quote));
                 const fact = result.error
                   ? result.error
                   : `One ${result.base} equals ${result.rate.toFixed(4)} ${result.quote}.`;
@@ -555,7 +772,9 @@ function createMediaStreamHandler({
             }
             if (intent === "local_service" && placesService?.enabled) {
               (async () => {
-                const result = await placesService.searchText(trimmed.slice(0, 200));
+                const result = await timed("places_text", () =>
+                  placesService.searchText(trimmed.slice(0, 200))
+                );
                 const fact = result.error
                   ? result.error
                   : `Nearby options: ${result.places.map((p) => `${p.name}${p.address ? ", " + p.address : ""}`).join(". ")}`;
@@ -566,7 +785,9 @@ function createMediaStreamHandler({
             if (intent === "hotel" && placesService?.enabled) {
               const location = extractLocation(trimmed);
               (async () => {
-                const result = await placesService.searchHotels(location);
+                const result = await timed("places_hotels", () =>
+                  placesService.searchHotels(location)
+                );
                 const fact = result.error
                   ? result.error
                   : `Popular hotels: ${result.places.map((p) => `${p.name}, rated ${p.rating || "N A"}`).join(". ")}`;
@@ -577,7 +798,9 @@ function createMediaStreamHandler({
             if (intent === "food" && placesService?.enabled) {
               const location = extractLocation(trimmed);
               (async () => {
-                const result = await placesService.searchFood(location);
+                const result = await timed("places_food", () =>
+                  placesService.searchFood(location)
+                );
                 const fact = result.error
                   ? result.error
                   : `Popular food places: ${result.places.map((p) => `${p.name}, rated ${p.rating || "N A"}`).join(". ")}`;
@@ -604,7 +827,9 @@ function createMediaStreamHandler({
                 return;
               }
               (async () => {
-                const result = await travelService.cheapestRoute(origin, destination);
+                const result = await timed("travel_fare", () =>
+                  travelService.cheapestRoute(origin, destination)
+                );
                 const fact = result.error
                   ? result.error
                   : `Cheapest recent fare from ${result.origin} to ${result.destination} is about ${result.price} ${result.currency}.`;
@@ -616,7 +841,9 @@ function createMediaStreamHandler({
               const sportKey = sportsService.detectSport(trimmed);
               (async () => {
                 try {
-                  const result = await sportsService.getLiveScores(sportKey);
+                  const result = await timed("sports", () =>
+                    sportsService.getLiveScores(sportKey)
+                  );
                   const fact = result.error
                     ? result.error
                     : result.message
@@ -633,9 +860,16 @@ function createMediaStreamHandler({
             }
             if (intent === "flight_status" && flightsService?.enabled) {
               const flightIata = extractFlightNumber(trimmed);
+              // No number: ask, like the time handler — a word-for-word error reads as a refusal
+              if (!flightIata) {
+                sendReply("Which flight number should I check?", { multilingual: true });
+                return;
+              }
               (async () => {
                 try {
-                  const result = await flightsService.getFlightStatus(flightIata || "");
+                  const result = await timed("flight_status", () =>
+                    flightsService.getFlightStatus(flightIata || "")
+                  );
                   const fact = result.error ? result.error : result.message;
                   logger.info({ callSid, flightIata, fact }, "Flight fast path");
                   sendReply(fact, { multilingual: !result.error });
@@ -649,7 +883,9 @@ function createMediaStreamHandler({
             if (intent === "crypto" && stocksService?.enabled) {
               (async () => {
                 try {
-                  const result = await stocksService.getCryptoQuote(trimmed);
+                  const result = await timed("crypto", () =>
+                    stocksService.getCryptoQuote(trimmed)
+                  );
                   const fact = result.error ? result.error : result.message;
                   logger.info({ callSid, fact }, "Crypto fast path");
                   sendReply(fact, { multilingual: !result.error });
@@ -666,14 +902,14 @@ function createMediaStreamHandler({
             if (intent === "rates" && stocksService?.enabled) {
               (async () => {
                 try {
-                  const result = await stocksService.getUsInterestRate();
+                  const result = await timed("rates", () => stocksService.getUsInterestRate());
                   const fact = result.error ? result.error : result.message;
                   logger.info({ callSid, fact }, "Rates fast path");
                   sendReply(fact, { multilingual: !result.error });
                 } catch (err) {
                   logger.error({ callSid, err: err.message }, "Rates fast path failed");
                   sendReply(
-                    "Many U S savings rates are often around four to five percent — check your bank for the exact APY.",
+                    "I couldn't fetch live U S rates right now. Please check the Federal Reserve website or your bank.",
                     { multilingual: false }
                   );
                 }
@@ -683,7 +919,7 @@ function createMediaStreamHandler({
             if (intent === "stocks" && stocksService?.enabled) {
               (async () => {
                 try {
-                  const result = await stocksService.getQuote(trimmed);
+                  const result = await timed("stocks", () => stocksService.getQuote(trimmed));
                   const fact = result.error ? result.error : result.message;
                   logger.info({ callSid, fact }, "Stocks fast path");
                   sendReply(fact, { multilingual: !result.error });
@@ -694,9 +930,11 @@ function createMediaStreamHandler({
               })();
               return;
             }
+            metrics.setRoute(turnId, "chat");
             if (openaiWs?.readyState === WebSocket.OPEN) {
               if (responseInProgress) {
                 logger.info({ callSid }, "Skip general reply: response already in progress");
+                metrics.finishWithoutReply(turnId, "skipped_busy");
                 return;
               }
               const langName = languageLabel(
@@ -704,25 +942,41 @@ function createMediaStreamHandler({
               );
               openaiWs.send(
                 JSON.stringify(
-                  createResponsePayload({
-                    instructions: `Reply in ${langName} only. About 15–25 words. Answer from general knowledge when you can (like ChatGPT). If you cannot complete an action (browse, open links, transfer), still help with a clear website or search tip plus what you can do next. Answer only their latest request.`,
-                    tools: [],
-                  })
+                  createResponsePayload(
+                    {
+                      instructions: `Reply in ${langName} only. About 15–25 words. Answer from general knowledge when you can (like ChatGPT). Never state live or changing facts (whether a place or airport is open today, current prices, schedules, today's events): say you can't check that live right now and suggest where to check. If you cannot complete an action (browse, open links, transfer), still help with a clear website or search tip plus what you can do next. Answer only their latest request.`,
+                      tools: [],
+                    },
+                    turnId
+                  )
                 )
               );
             }
           }
 
           if (ev.type === "input_audio_buffer.speech_started") {
+            userSpeechSeq += 1;
+            metrics.onSpeechStarted(ev.item_id);
             interruptAgentPlayback();
           }
 
+          if (ev.type === "input_audio_buffer.speech_stopped") {
+            metrics.onSpeechStopped(ev.item_id);
+          }
+
+          if (ev.type === "input_audio_buffer.committed") {
+            metrics.onCommitted(ev.item_id);
+          }
+
           if (ev.type === "conversation.item.input_audio_transcription.completed" && ev.transcript) {
-            handleUserTranscript(ev.transcript);
+            const turnId = ev.item_id || `noitem:${Date.now()}`;
+            metrics.onTranscript(turnId, ev.transcript);
+            handleUserTranscript(ev.transcript, turnId);
           }
 
           if (ev.type === "response.created") {
             const createdId = responseIdFromEvent(ev);
+            metrics.onResponseCreated(createdId, ev.response?.metadata?.client_gen);
             const createdGen = Number(ev.response?.metadata?.client_gen);
             const genMismatch =
               Number.isFinite(createdGen) && createdGen !== expectedGeneration;
@@ -747,6 +1001,16 @@ function createMediaStreamHandler({
             ev.type === "response.failed"
           ) {
             const endedId = responseIdFromEvent(ev);
+            const endedTurnId = metrics.turnForResponse(endedId);
+            metrics.onResponseEnded(
+              endedId,
+              ev.type === "response.done" ? ev.response?.status || "done" : ev.type.slice(9),
+              {
+                functionCall: (ev.response?.output || []).some(
+                  (o) => o?.type === "function_call"
+                ),
+              }
+            );
             let isActiveCompletion = false;
             if (activeResponseId != null) {
               if (endedId === activeResponseId) {
@@ -761,7 +1025,13 @@ function createMediaStreamHandler({
             }
             // else: activeResponseId null with endedId set → stale after interrupt; ignore
 
+            if (toolsMode && isActiveCompletion && ev.type === "response.done") {
+              handleToolsResponse(ev.response, endedTurnId);
+            }
+
+            // Regex mode only: legacy single weather tool
             if (
+              !toolsMode &&
               isActiveCompletion &&
               ev.type === "response.done" &&
               (weatherService?.enabled || openMeteoService?.enabled)
@@ -791,10 +1061,8 @@ function createMediaStreamHandler({
 
                 (async () => {
                   try {
-                    const result = await fetchWeatherForPlace(
-                      { city, country },
-                      openMeteoService,
-                      weatherService
+                    const result = await metrics.time(endedTurnId, "weather_tool", () =>
+                      fetchWeatherForPlace({ city, country }, openMeteoService, weatherService)
                     );
                     const output = JSON.stringify(result);
                     openaiWs.send(
@@ -807,7 +1075,7 @@ function createMediaStreamHandler({
                         },
                       })
                     );
-                    openaiWs.send(JSON.stringify(createResponsePayload({})));
+                    openaiWs.send(JSON.stringify(createResponsePayload({}, endedTurnId)));
                     logger.info({ callSid, city, country, result }, "Weather tool result");
                   } catch (err) {
                     logger.error({ callSid, err: err.message }, "Weather tool failed");
@@ -821,7 +1089,7 @@ function createMediaStreamHandler({
                         },
                       })
                     );
-                    openaiWs.send(JSON.stringify(createResponsePayload({})));
+                    openaiWs.send(JSON.stringify(createResponsePayload({}, endedTurnId)));
                   }
                 })();
               }
@@ -842,6 +1110,7 @@ function createMediaStreamHandler({
                     media: { payload: mulawBase64 },
                   })
                 );
+                metrics.onAudioSent(ev.response_id);
               } catch (err) {
                 logger.warn({ callSid, err: err.message }, "Audio convert failed");
               }

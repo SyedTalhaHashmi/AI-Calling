@@ -23,9 +23,61 @@ function wordCount(text) {
     .filter(Boolean).length;
 }
 
-/** Explicit "speak English / habla español" style switches. */
+/** Language names callers say (English and native spellings) → reply language code. */
+const LANGUAGE_WORDS = {
+  english: "en",
+  spanish: "es",
+  "español": "es",
+  espanol: "es",
+  french: "fr",
+  "français": "fr",
+  francais: "fr",
+  portuguese: "pt",
+  "português": "pt",
+  portugues: "pt",
+  hindi: "hi",
+  urdu: "hi",
+  chinese: "zh",
+  mandarin: "zh",
+  japanese: "ja",
+  yiddish: "yi",
+  hebrew: "he",
+};
+const LANGUAGE_WORD_RE = Object.keys(LANGUAGE_WORDS).join("|");
+
+/** "How do you say … in Spanish?" — about a language, not a request to speak it. */
+const TRANSLATION_ASK = new RegExp(
+  `\\b(how (do|would|can|could) (you|i|we) say|how to say|translate|translation|what does .+ mean|what(?:'s| is) .+ in (?:${LANGUAGE_WORD_RE}))(?![\\p{L}])`,
+  "iu"
+);
+const CAPABILITY_ASK = new RegExp(
+  `\\b(?:(?:do|can|could) you (?:also |even )?(?:speak|understand|know)|if you (?:can|could) speak|are you able to speak)\\s+(${LANGUAGE_WORD_RE})(?![\\p{L}])`,
+  "iu"
+);
+/** "Can you speak Spanish please?" / "…switch to Spanish" — a question that is really a request. */
+const REQUEST_CUE = /\b(please|switch|change|let'?s|i want you|i'?d like you|from now on)\b/i;
+
+/**
+ * "Do you speak Spanish?" / "Can you speak Yiddish?" → that language's code (asking, not asking to switch).
+ * Null when it is a clear request ("Can you speak Spanish please?").
+ */
+function languageCapabilityAsk(text) {
+  const t = String(text || "").toLowerCase();
+  const m = t.match(CAPABILITY_ASK);
+  if (!m || REQUEST_CUE.test(t)) return null;
+  return LANGUAGE_WORDS[m[1]] || null;
+}
+
+/** Answer to "Would you like me to switch?" */
+const AFFIRMATIVE =
+  /^[\s¡¿]*(yes|yeah|yep|yup|sure|ok|okay|please|of course|go ahead|do it|s[ií]|claro|por favor|oui|haan|ji)(?![\p{L}])/iu;
+
+/** Explicit "speak English / habla español" style switches (not capability or translation questions). */
 function explicitLanguageSwitch(text) {
   const t = String(text || "").toLowerCase();
+  if (TRANSLATION_ASK.test(t) || languageCapabilityAsk(t)) return null;
+  const toLanguage = t.match(new RegExp(`\\b(?:switch|change)\\s+(?:it\\s+|over\\s+)?to\\s+(${LANGUAGE_WORD_RE})(?![\\p{L}])`, "iu"));
+  if (toLanguage) return LANGUAGE_WORDS[toLanguage[1]];
   const pairs = [
     { re: /\b(speak|talk|reply|answer|switch)\s+(in\s+)?english\b|\bin\s+english\b|\benglish\s+please\b/, code: "en" },
     { re: /\b(speak|talk|reply|answer|switch)\s+(in\s+)?spanish\b|\bin\s+spanish\b|\bespa[nñ]ol\b|\bhabla\s+espa/, code: "es" },
@@ -41,28 +93,12 @@ function explicitLanguageSwitch(text) {
       re: /\b(speak|talk|reply|answer|switch|continue)\s+(in\s+)?hebrew\b|\bin\s+hebrew\b|\bhebrew\s+please\b/,
       code: "he",
     },
-    { re: /\bdo you speak spanish\b/, code: "es" },
-    { re: /\bdo you speak (english|french|hindi|chinese)\b/, code: null }, // question only — handled below
   ];
   for (const { re, code } of pairs) {
-    if (re.test(t) && code) return code;
+    if (re.test(t)) return code;
   }
-  // "Do you speak Spanish?" → lock Spanish for the yes + following turns
-  if (/\bdo you speak spanish\b/.test(t) || /\bhabla(?:s)?\s+espa[nñ]ol\b/.test(t)) return "es";
-  if (/\bdo you speak french\b/.test(t)) return "fr";
-  if (/\bdo you speak hindi\b/.test(t)) return "hi";
-  if (/\bdo you speak (english|english as well)\b/.test(t)) return "en";
-  if (/\bdo you speak chinese\b/.test(t)) return "zh";
-  if (/\bdo you speak portuguese\b/.test(t)) return "pt";
-  // Capability ask locks the language so the next turn can continue in it
-  if (
-    /\b(do you|can you)\s+speak\s+yiddish\b/.test(t) ||
-    /\bif you can speak\s+yiddish\b/.test(t) ||
-    /\bwant to know if you can speak\s+yiddish\b/.test(t)
-  ) {
-    return "yi";
-  }
-  if (/\b(do you|can you)\s+speak\s+hebrew\b/.test(t)) return "he";
+  // "¿Hablas español?" — the caller is already speaking Spanish
+  if (/\bhabla(?:s)?\s+espa[nñ]ol\b/.test(t)) return "es";
   return null;
 }
 
@@ -129,6 +165,30 @@ function languageLabel(code) {
 function updateReplyLanguage(session, userText) {
   if (!session) return { changed: false, language: "en" };
 
+  // Reply to our "Would you like me to switch to …?" — the offer lasts one turn
+  const offered = session.languageOffer;
+  if (offered) {
+    session.languageOffer = null;
+    if (AFFIRMATIVE.test(String(userText || "")) && !/^\s*no\b/i.test(String(userText || ""))) {
+      session.replyLanguage = offered;
+      return { changed: true, language: offered, acceptedOffer: true };
+    }
+    // Simply carrying on in the offered language counts as yes
+    if (detectLanguage(userText) === offered && session.replyLanguage !== offered) {
+      session.replyLanguage = offered;
+      return { changed: true, language: offered };
+    }
+  }
+
+  // "Do you speak Spanish?" — offer, don't switch
+  const asked = languageCapabilityAsk(userText);
+  if (asked) {
+    const current = session.replyLanguage || "en";
+    if (asked === current) return { changed: false, language: current };
+    session.languageOffer = asked;
+    return { changed: false, language: current, offer: asked };
+  }
+
   const explicit = explicitLanguageSwitch(userText);
   if (explicit) {
     const changed = session.replyLanguage !== explicit;
@@ -184,6 +244,7 @@ module.exports = {
   LANG_NAMES,
   detectLanguage,
   explicitLanguageSwitch,
+  languageCapabilityAsk,
   updateReplyLanguage,
   languageLabel,
   languageInstruction,

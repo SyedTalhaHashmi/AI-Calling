@@ -19,6 +19,7 @@ const createFxService = require("./services/fx");
 const createSportsService = require("./services/sports");
 const createFlightsService = require("./services/flights");
 const createStocksService = require("./services/stocks");
+const createWebSearchService = require("./services/webSearch");
 const createPlatformApi = require("./services/platformApi");
 const createMediaStreamHandler = require("./handlers/mediaStream");
 const twilio = require("twilio");
@@ -84,7 +85,8 @@ function buildServer() {
   const worldTimeService = createWorldTimeService(
     config.rapidApi.key,
     config.rapidApi.worldTimeHost,
-    logger
+    logger,
+    { enabled: config.rapidApi.worldTimeEnabled }
   );
   const placesService = createPlacesService(config.googlePlaces.apiKey, logger);
   const travelService = createTravelService(config.travelpayouts.token, logger);
@@ -93,6 +95,12 @@ function buildServer() {
   const sportsService = createSportsService(config.apiFootball.apiKey, logger);
   const flightsService = createFlightsService(config.aviationstack.apiKey, logger);
   const stocksService = createStocksService(config.alphavantage.apiKey, logger);
+  const webSearchService = createWebSearchService({
+    apiKey: config.webSearch.exaApiKey,
+    enabled: config.webSearch.enabled,
+    dailyLimit: config.webSearch.dailyLimit,
+    logger,
+  });
   const handleMediaStream = createMediaStreamHandler({
     callStore,
     logger,
@@ -108,7 +116,11 @@ function buildServer() {
     sportsService,
     flightsService,
     stocksService,
+    webSearchService,
     twilioClient: twilioVoiceClient,
+    latencyMetricsEnabled: config.latencyMetricsEnabled,
+    routerMode: config.routerMode,
+    toolDeadlineMs: config.toolDeadlineMs,
   });
 
   wss.on("connection", (ws, req) => {
@@ -122,7 +134,7 @@ if (require.main === module) {
   const server = buildServer();
   server.listen(config.port, () => {
     logger.info(
-      { port: config.port, streaming: true },
+      { port: config.port, streaming: true, routerMode: config.routerMode },
       "AI phone assistant server is running"
     );
   });

@@ -1,7 +1,11 @@
 const axios = require("axios");
 const { MemoryCache } = require("./cache");
+const { keepAliveAgent } = require("../utils/httpAgent");
+const { isCurrencyCode } = require("../utils/currencyCodes");
 
 const BASE = "https://api.frankfurter.dev/v2";
+/** Per attempt; one retry on timeout / network / 5xx keeps the worst case near 2 s. */
+const ATTEMPT_TIMEOUT_MS = 1000;
 
 /** Map spoken currency words to ISO codes (Frankfurter-supported majors). */
 function wordToIso(token) {
@@ -10,7 +14,7 @@ function wordToIso(token) {
     .trim()
     .replace(/[?.!,;:]+$/g, "");
   if (!raw) return null;
-  if (/^[a-z]{3}$/i.test(raw)) return raw.toUpperCase();
+  if (isCurrencyCode(raw)) return raw.toUpperCase();
   if (/\b(us\s*)?dollar(s)?\b|\busd\b|\$\b/.test(raw)) return "USD";
   if (/\beuro?s?\b|\beur\b/.test(raw)) return "EUR";
   if (/\bpound(s)?\b|\bgbp\b|\bsterling\b/.test(raw)) return "GBP";
@@ -31,8 +35,8 @@ function wordToIso(token) {
  */
 function parsePairFromUtterance(text) {
   const t = String(text || "");
-  const codes = t.toUpperCase().match(/\b[A-Z]{3}\b/g);
-  if (codes && codes.length >= 2) return { base: codes[0], quote: codes[1] };
+  const codes = (t.toUpperCase().match(/\b[A-Z]{3}\b/g) || []).filter(isCurrencyCode);
+  if (codes.length >= 2) return { base: codes[0], quote: codes[1] };
 
   let m = t.match(/\bfrom\s+(.+?)\s+to\s+(.+?)(?:\?|\.|!|$)/i);
   if (m) {
@@ -40,13 +44,20 @@ function parsePairFromUtterance(text) {
     const quote = wordToIso(m[2]);
     if (base && quote) return { base, quote };
   }
-  const toMatches = [...t.matchAll(/\b([\w]+)\s+to\s+([\w]+)\b/gi)];
+  // "dollars to pesos", "a dollar in pesos", "dollar to Mexican peso" (two-word quote)
+  const toMatches = [...t.matchAll(/\b([\w]+)\s+(?:to|in|into)\s+([\w]+(?:\s+[\w]+)?)\b/gi)];
   for (let i = toMatches.length - 1; i >= 0; i--) {
     const base = wordToIso(toMatches[i][1]);
     const quote = wordToIso(toMatches[i][2]);
     if (base && quote) return { base, quote };
   }
   return { base: null, quote: null };
+}
+
+/** Timeouts, dropped connections and 5xx are worth one retry; a 4xx (bad pair) is not. */
+function isRetryable(err) {
+  const status = err?.response?.status;
+  return status ? status >= 500 : true;
 }
 
 function createFxService(enabled, logger) {
@@ -69,8 +80,19 @@ function createFxService(enabled, logger) {
     const cached = cache.get(cacheKey);
     if (cached) return cached;
 
+    const fetchRate = () =>
+      axios.get(`${BASE}/rate/${from}/${to}`, {
+        timeout: ATTEMPT_TIMEOUT_MS,
+        httpsAgent: keepAliveAgent,
+      });
     try {
-      const res = await axios.get(`${BASE}/rate/${from}/${to}`, { timeout: 1200 });
+      let res;
+      try {
+        res = await fetchRate();
+      } catch (err) {
+        if (!isRetryable(err)) throw err;
+        res = await fetchRate();
+      }
       const rate = Number(res.data?.rate);
       if (!Number.isFinite(rate)) return { error: "Rate not available right now." };
       const result = { base: from, quote: to, rate };

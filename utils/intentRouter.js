@@ -9,6 +9,7 @@ const {
   normalizeCountryCode,
   defaultCityForCountry,
 } = require("./placeResolve");
+const { isCurrencyCode } = require("./currencyCodes");
 
 /** Common English words that look like IATA but must never be used as airports. */
 const IATA_STOPWORDS = new Set(
@@ -158,8 +159,15 @@ function isWeatherQuestion(text) {
     "temperature",
     "forecast",
     "rain",
+    "raining",
+    "rainy",
     "snow",
+    "snowing",
     "sunny",
+    "windy",
+    "humid",
+    "humidity",
+    "umbrella",
     "hot",
     "cold",
     "degrees",
@@ -170,13 +178,25 @@ function isWeatherQuestion(text) {
     "temperatura",
     "pronóstico",
     "pronostico",
+    "calor",
+    "frío",
+    "frio",
+    "lluvia",
+    "llueve",
+    "lloviendo",
     "mausam",
   ];
   return keywords.some((k) => hasPhrase(t, k));
 }
 
+// "What time does the pharmacy open?" asks about a schedule, not the clock.
+const SCHEDULE_TIME_RE =
+  /\bwhat time (?:do(?! you have\b)|does|did|will|would|should|can|could|are|is (?!it\b|now\b))\b/i;
+
 function isTimeQuestion(text) {
-  const t = (text || "").toLowerCase();
+  // "Is my flight on time?" asks about punctuality, not the clock
+  const t = (text || "").toLowerCase().replace(/\bon time\b/g, " ");
+  if (SCHEDULE_TIME_RE.test(t)) return false;
   return (
     /\b(time|what time|current time|what's the time|timezone|what time is it)\b/i.test(t) ||
     /time\s+in\s+/i.test(t)
@@ -185,6 +205,8 @@ function isTimeQuestion(text) {
 
 function isSportsQuestion(text) {
   const t = text || "";
+  // The sports lookup only has live scores; "when is the next match" is a schedule question
+  if (/\b(next|upcoming|schedule|when is|when does|when do)\b/i.test(t)) return false;
   const keywords = [
     "score",
     "scores",
@@ -209,6 +231,7 @@ function isFlightQuestion(text) {
   if (isTravelPriceQuestion(t)) return false;
   return (
     /\b(flight status|is flight|where is flight|flight number)\b/i.test(t) ||
+    /\bflight\b.*\b(delayed|on time|landed|departed|cancell?ed)\b/i.test(t) ||
     /flight\s+[a-z]{2}\s*\d+/i.test(t)
   );
 }
@@ -233,6 +256,8 @@ function isRatesQuestion(text) {
 function isStockQuestion(text) {
   if (isCryptoQuestion(text) || isRatesQuestion(text)) return false;
   const t = (text || "").toLowerCase();
+  // Market hours are a schedule question, not a quote
+  if (/\bmarket\b.*\b(open|close|closed|hours)\b/i.test(t)) return false;
   return (
     /\b(stock|stocks|share price|share price of|ticker|quote)\b/i.test(t) ||
     /\b(price of|how much is)\s+(apple|google|microsoft|amazon|meta|tesla|nvidia|netflix|[a-z]{1,5}\s+stock)\b/i.test(
@@ -252,7 +277,7 @@ function isExchangeQuestion(text) {
     /\b(exchange rate|currency|convert|conversion|forex|usd|eur|inr|pkr|aed|gbp|cop|mxn)\b/i.test(
       t
     ) ||
-    /\b(peso|pesos|dollar|dollars|euro|euros|pound|pounds|yen|yuan|real|reais)\b/i.test(t)
+    /\b(peso|pesos|dollar|dollars|euro|euros|pound|pounds|yen|yuan|brazilian real|reais)\b/i.test(t)
   );
 }
 
@@ -425,10 +450,8 @@ function extractFlightNumber(text) {
 }
 
 function extractCurrencies(text) {
-  const symbols = String(text || "")
-    .toUpperCase()
-    .match(/\b[A-Z]{3}\b/g);
-  if (!symbols || symbols.length < 2) return { base: null, quote: null };
+  const symbols = (String(text || "").toUpperCase().match(/\b[A-Z]{3}\b/g) || []).filter(isCurrencyCode);
+  if (symbols.length < 2) return { base: null, quote: null };
   return { base: symbols[0], quote: symbols[1] };
 }
 

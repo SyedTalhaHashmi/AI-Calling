@@ -191,6 +191,8 @@ function normalizeCountryCode(raw) {
   if (raw == null) return null;
   const s = String(raw).trim();
   if (!s) return null;
+  // "UK" is common speech but the ISO code is GB
+  if (/^uk$/i.test(s)) return "GB";
   if (/^[A-Za-z]{2}$/.test(s)) return s.toUpperCase();
   const key = s.toLowerCase().replace(/\s+/g, " ");
   return COUNTRY_ALIASES[key] || null;
@@ -287,8 +289,10 @@ function extractWeatherPlaces(text) {
       .replace(/\b(?:hoy|today|tomorrow|manana|mañana|please|por favor|ahora|right now)\b/gi, " ")
       .replace(/\s+/g, " ")
       .trim();
-    // Ignore time-only phrases ("la otra semana", "next week") — use country hint instead
+    // Ignore time-only phrases ("la otra semana", "next week") — use country hint instead.
+    // Ignore pronouns and "here" words: "Is it hot…" must not read "it" as Italy (IT).
     if (
+      /^(?:it|there|here|this|that|outside|my\s+(?:area|city|location))\b/i.test(cityChunk) ||
       /^(?:la\s+)?(?:otra\s+)?semana$/i.test(cityChunk) ||
       /^(?:this|next|last)\s+week$/i.test(cityChunk) ||
       /^(?:today|tomorrow|tonight|hoy|manana|mañana)$/i.test(cityChunk) ||

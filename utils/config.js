@@ -1,4 +1,6 @@
 const dotenv = require("dotenv");
+const { parseRouterMode, parseToolDeadlineMs } = require("../handlers/realtimeTools");
+const { parseWebSearchDailyLimit } = require("../services/webSearch");
 
 dotenv.config();
 
@@ -43,6 +45,8 @@ const config = {
   },
   rapidApi: {
     key: process.env.RAPIDAPI_KEY || "",
+    /** RapidAPI world time is opt-in; default answers come from built-in time-zone data. */
+    worldTimeEnabled: process.env.WORLD_TIME_API_ENABLED === "true",
     worldTimeHost:
       process.env.WORLD_TIME_API_HOST || "world-time-api3.p.rapidapi.com",
   },
@@ -97,6 +101,18 @@ const config = {
    * Only served when ENABLE_MIC_TEST=true — keep off in production.
    */
   micTestEnabled: process.env.ENABLE_MIC_TEST === "true",
+  /** Per-turn latency log lines ("turn_latency" / "call_latency"). Logging only; on unless "false". */
+  latencyMetricsEnabled: process.env.LATENCY_METRICS !== "false",
+  /** "regex" (default: existing fast paths) or "tools" (model picks existing-service tools). */
+  routerMode: parseRouterMode(process.env.ROUTER_MODE),
+  /** Tools mode only: per-tool time limit. */
+  toolDeadlineMs: parseToolDeadlineMs(process.env.TOOL_DEADLINE_MS),
+  /** Tools mode only: Exa web search, off unless WEB_SEARCH_ENABLED=true and a key is set. */
+  webSearch: {
+    enabled: process.env.WEB_SEARCH_ENABLED === "true",
+    exaApiKey: (process.env.EXA_API_KEY || "").trim(),
+    dailyLimit: parseWebSearchDailyLimit(process.env.WEB_SEARCH_DAILY_LIMIT),
+  },
 };
 
 module.exports = config;

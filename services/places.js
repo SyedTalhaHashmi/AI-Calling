@@ -1,7 +1,10 @@
 const axios = require("axios");
 const { MemoryCache } = require("./cache");
+const { keepAliveAgent } = require("../utils/httpAgent");
 
 const BASE = "https://places.googleapis.com/v1/places:searchText";
+/** Cold-connection p90 was ~1.45 s, so the old 1.6 s limit failed ~1 in 4 hotel searches. */
+const TIMEOUT_MS = 2200;
 
 function createPlacesService(apiKey, logger) {
   if (!apiKey) {
@@ -28,7 +31,7 @@ function createPlacesService(apiKey, logger) {
       const res = await axios.post(
         BASE,
         { textQuery: query, languageCode: "en", maxResultCount: 3 },
-        { headers, timeout: 1600 }
+        { headers, timeout: TIMEOUT_MS, httpsAgent: keepAliveAgent }
       );
       const places = (res.data?.places || []).slice(0, 3).map((p) => ({
         name: p.displayName?.text,

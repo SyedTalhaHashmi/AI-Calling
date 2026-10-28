@@ -7,7 +7,8 @@
     "build": "node --check server.js && node --check handlers/mediaStream.js && node --check utils/intentRouter.js",
     "start": "node server.js",
     "dev": "node --watch server.js",
-    "test": "node test/intentRouter.test.js && node test/languageBilling.test.js",
+    "test": "node test/intentRouter.test.js && node test/languageBilling.test.js && node test/turnMetrics.test.js && node test/cache.test.js && node test/stocksCache.test.js && node test/time.test.js && node test/webSearch.test.js && node test/providerReliability.test.js && node test/realtimeTools.test.js && node test/mediaStreamRouting.test.js",
+    "latency:report": "node dev/latencyReport.js",
     "test:live": "node test/liveApiSmoke.test.js",
     "test:complex": "node test/complexFlows.test.js",
     "test:unique": "node test/uniqueUserAsks.test.js"
@@ -16,15 +17,18 @@
   "author": "",
   "license": "ISC",
   "type": "commonjs",
+  "engines": {
+    "node": "24.x"
+  },
   "dependencies": {
     "alawmulaw": "^6.0.0",
-    "axios": "^1.13.6",
-    "dotenv": "^17.3.1",
-    "express": "^5.2.1",
-    "nodemailer": "^8.0.1",
-    "openai": "^6.27.0",
-    "pino": "^10.3.1",
-    "twilio": "^5.12.2",
-    "ws": "^8.19.0"
+    "axios": "^1.21.0",
+    "dotenv": "^18.0.9",
+    "express": "^5.3.0",
+    "nodemailer": "^10.2.1",
+    "openai": "^7.45.1",
+    "pino": "^10.4.0",
+    "twilio": "^6.2.0",
+    "ws": "^8.22.0"
   }
 }

@@ -1,5 +1,6 @@
 const axios = require("axios");
 const { MemoryCache } = require("./cache");
+const { keepAliveAgent } = require("../utils/httpAgent");
 const {
   normalizeCountryCode,
   defaultCityForCountry,
@@ -8,6 +9,8 @@ const {
 
 const GEO_URL = "https://geocoding-api.open-meteo.com/v1/search";
 const WEATHER_URL = "https://api.open-meteo.com/v1/forecast";
+/** City coordinates don't change; caching them skips one of the two requests (~0.5–0.9 s cold). */
+const GEO_TTL_MS = 24 * 60 * 60 * 1000;
 
 const WMO_DESC = {
   0: "clear sky",
@@ -33,7 +36,22 @@ const WMO_DESC = {
   99: "thunderstorm",
 };
 
-function createOpenMeteoService(enabled, logger) {
+/** Day i of Open-Meteo's daily arrays (0 = today, local to the city); undefined when missing. */
+function dailyForecast(daily, i) {
+  const high = daily?.temperature_2m_max?.[i];
+  const low = daily?.temperature_2m_min?.[i];
+  if (high == null || low == null) return undefined;
+  const code = Number(daily.weather_code?.[i]);
+  const rain = daily.precipitation_probability_max?.[i];
+  return {
+    high: Math.round(Number(high)),
+    low: Math.round(Number(low)),
+    rainChance: rain != null ? Math.round(Number(rain)) : null,
+    description: WMO_DESC[code] || `weather code ${code}`,
+  };
+}
+
+function createOpenMeteoService(enabled, logger, { now } = {}) {
   if (!enabled) {
     return {
       enabled: false,
@@ -41,7 +59,44 @@ function createOpenMeteoService(enabled, logger) {
     };
   }
 
-  const cache = new MemoryCache();
+  const cache = new MemoryCache({ now });
+  const geoCache = new MemoryCache({ now });
+
+  /** Geocoding result for the request (includes the no-country retry), cached a day. */
+  async function geocode(placeName, effectiveCountry) {
+    const geoKey = `geo:${placeName}|${effectiveCountry || ""}`.toLowerCase();
+    const cachedGeo = geoCache.get(geoKey);
+    if (cachedGeo) return cachedGeo;
+
+    const geoParams = {
+      name: placeName,
+      count: 10,
+      language: "en",
+      format: "json",
+    };
+    if (effectiveCountry) {
+      geoParams.countryCode = effectiveCountry;
+    }
+
+    const geo = await axios.get(GEO_URL, {
+      params: geoParams,
+      timeout: 2500,
+      httpsAgent: keepAliveAgent,
+    });
+
+    let results = geo.data?.results || [];
+    // If country filter returned nothing, retry without filter then pick by country
+    if (!results.length && effectiveCountry) {
+      const retry = await axios.get(GEO_URL, {
+        params: { name: placeName, count: 10, language: "en", format: "json" },
+        timeout: 2500,
+        httpsAgent: keepAliveAgent,
+      });
+      results = retry.data?.results || [];
+    }
+    if (results.length) geoCache.set(geoKey, results, GEO_TTL_MS);
+    return results;
+  }
 
   async function getByCity(city, country) {
     let placeName = String(city || "").trim();
@@ -71,30 +126,7 @@ function createOpenMeteoService(enabled, logger) {
     if (cached) return cached;
 
     try {
-      const geoParams = {
-        name: placeName,
-        count: 10,
-        language: "en",
-        format: "json",
-      };
-      if (effectiveCountry) {
-        geoParams.countryCode = effectiveCountry;
-      }
-
-      const geo = await axios.get(GEO_URL, {
-        params: geoParams,
-        timeout: 2500,
-      });
-
-      let results = geo.data?.results || [];
-      // If country filter returned nothing, retry without filter then pick by country
-      if (!results.length && effectiveCountry) {
-        const retry = await axios.get(GEO_URL, {
-          params: { name: placeName, count: 10, language: "en", format: "json" },
-          timeout: 2500,
-        });
-        results = retry.data?.results || [];
-      }
+      const results = await geocode(placeName, effectiveCountry);
 
       const place = pickGeoResult(results, effectiveCountry);
       if (!place) return { error: `I couldn't find ${placeName}. Try another city name.` };
@@ -121,11 +153,12 @@ function createOpenMeteoService(enabled, logger) {
           longitude: place.longitude,
           current:
             "temperature_2m,apparent_temperature,weather_code,wind_speed_10m,relative_humidity_2m",
-          daily: "weather_code,temperature_2m_max,temperature_2m_min",
+          daily: "weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max",
           forecast_days: 7,
           timezone: "auto",
         },
         timeout: 2500,
+        httpsAgent: keepAliveAgent,
       });
       const current = weather.data?.current;
       if (!current) return { error: "Could not fetch weather." };
@@ -142,6 +175,9 @@ function createOpenMeteoService(enabled, logger) {
           ? Math.round(Number(current.relative_humidity_2m))
           : undefined,
         windSpeed: current.wind_speed_10m,
+        // Same request: lets "will it rain later / tomorrow?" be answered instead of guessed
+        today: dailyForecast(weather.data?.daily, 0),
+        tomorrow: dailyForecast(weather.data?.daily, 1),
       };
       return cache.set(cacheKey, result, 2 * 60 * 1000);
     } catch (err) {

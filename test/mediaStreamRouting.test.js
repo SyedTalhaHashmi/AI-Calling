@@ -111,7 +111,7 @@ function stubServices({ weatherDelayMs = 0, webSearch = false, fxError = false, 
 }
 
 /** Starts a call against a fake Realtime server; greeting already completed. */
-async function startCall({ routerMode, weatherDelayMs, webSearch, fxError, ratesError, flights, logs } = {}) {
+async function startCall({ routerMode, weatherDelayMs, webSearch, fxError, ratesError, flights, logs, session } = {}) {
   const server = new WebSocket.Server({ port: 0 });
   await new Promise((r) => server.on("listening", r));
   const received = [];
@@ -122,8 +122,11 @@ async function startCall({ routerMode, weatherDelayMs, webSearch, fxError, rates
   });
 
   const { services, calls } = stubServices({ weatherDelayMs, webSearch, fxError, ratesError, flights });
+  const callStore = new CallStore();
+  // session: billing fields as /incoming-call would set them (e.g. a 60-second trial)
+  if (session) Object.assign(callStore.getOrCreate("CAtest"), session);
   const handler = createMediaStreamHandler({
-    callStore: new CallStore(),
+    callStore,
     // logs: optional array that collects [fields, message] for every log line
     logger: logs ? { ...silent, info: (fields, msg) => logs.push([fields, msg]) } : silent,
     openaiApiKey: "test",
@@ -563,6 +566,100 @@ const weatherCall = (callId, args) => ({
       await waitFor(() => c.creates().length === 3);
       const switched = c.creates()[2].response;
       assert.ok(/^Say the following in Spanish only/.test(switched.instructions), switched.instructions);
+      c.close();
+    });
+  }
+
+  for (const routerMode of ["tools", "regex"]) {
+    await check(`${routerMode} mode: "Who created you?" → fixed creator reply, no tools`, async () => {
+      const c = await startCall({ routerMode });
+      await c.say("Who created you?");
+      await waitFor(() => c.creates().length === 2);
+      const r = c.creates()[1].response;
+      assert.ok(/^Say the following in English only/.test(r.instructions), r.instructions);
+      assert.ok(/I was created by Brash3D Media Group\./.test(r.instructions), r.instructions);
+      assert.deepStrictEqual(r.tools, []);
+      c.close();
+    });
+
+    await check(`${routerMode} mode: "What's your name?" → I'm Buddy`, async () => {
+      const c = await startCall({ routerMode });
+      await c.say("What's your name?");
+      await waitFor(() => c.creates().length === 2);
+      assert.ok(/I'm Buddy/.test(c.creates()[1].response.instructions), c.creates()[1].response.instructions);
+      c.close();
+    });
+  }
+
+  for (const routerMode of ["tools", "regex"]) {
+    await check(`${routerMode} mode: crisis message → caring turn with 988/911, no tools`, async () => {
+      const c = await startCall({ routerMode });
+      await c.say("I don't want to live anymore");
+      await waitFor(() => c.creates().length === 2);
+      const r = c.creates()[1].response;
+      assert.ok(/988/.test(r.instructions) && /911/.test(r.instructions), r.instructions);
+      assert.deepStrictEqual(r.tools, []);
+      c.close();
+    });
+  }
+
+  for (const routerMode of ["tools", "regex"]) {
+    await check(`${routerMode} mode: ordinary model turns carry the sensitive-topic / capability note`, async () => {
+      const c = await startCall({ routerMode });
+      await c.say("Do you have any restrictions?");
+      await waitFor(() => c.creates().length === 2);
+      const r = c.creates()[1].response.instructions;
+      assert.ok(/can check live weather/i.test(r) && /dating or relationships/i.test(r), r);
+      c.close();
+    });
+  }
+
+  await check("regex mode: a crisis message mentioning a city is not routed to weather", async () => {
+    const c = await startCall({ routerMode: "regex" });
+    await c.say("I want to kill myself, I'm alone in Miami");
+    await waitFor(() => c.creates().length === 2);
+    assert.ok(/988/.test(c.creates()[1].response.instructions));
+    assert.ok(!c.calls.some(([n]) => n === "weather"), JSON.stringify(c.calls));
+    c.close();
+  });
+
+  const trial = { billingMode: "trial", maxBillableSeconds: 60 };
+  for (const routerMode of ["tools", "regex"]) {
+    await check(`${routerMode} mode: on a trial call every model turn carries the trial fact`, async () => {
+      const c = await startCall({ routerMode, session: trial });
+      await c.say("Do you have any restrictions?");
+      await waitFor(() => c.creates().length === 2);
+      const r = c.creates()[1].response.instructions;
+      assert.ok(/free trial/i.test(r) && /60 seconds/.test(r), r);
+      c.close();
+    });
+  }
+
+  await check("regex mode: a normal (non-trial) call gets no trial note", async () => {
+    const c = await startCall({ routerMode: "regex" });
+    await c.say("Do you have any restrictions?");
+    await waitFor(() => c.creates().length === 2);
+    assert.ok(!/free trial/i.test(c.creates()[1].response.instructions));
+    c.close();
+  });
+
+  await check("trial call: 'And it's free.' gets the fixed trial reply, not 'free with no limit'", async () => {
+    const c = await startCall({ routerMode: "regex", session: trial });
+    await c.say("And it's free.");
+    await waitFor(() => c.creates().length === 2);
+    const r = c.creates()[1].response;
+    assert.ok(/free trial call lasts/i.test(r.instructions), r.instructions);
+    assert.deepStrictEqual(r.tools, []);
+    c.close();
+  });
+
+  // Production call: "Oh." got "No worries at all. Feel free to chat as long as you'd like!"
+  for (const reaction of ["Oh.", "Ah.", "Oh okay.", "Aha."]) {
+    await check(`'${reaction}' alone is a reaction, not a question (no reply)`, async () => {
+      const c = await startCall({ routerMode: "tools" });
+      await c.say(reaction);
+      await sleep(150);
+      assert.strictEqual(c.creates().length, 1);
       c.close();
     });
   }

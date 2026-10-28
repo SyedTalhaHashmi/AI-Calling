@@ -32,6 +32,17 @@ function isBillingQuestion(text) {
   if (isPlanCatalogQuestion(t)) return true;
   // "this call is free or what" — same ask as "is this call free?"
   if (/\b(this|the|my)\s+(phone\s+)?call\s+(is\s+)?free\b/i.test(t)) return true;
+  // Trial-call wordings (production 2026-10-28) that chat answered with "no strict limit" / "it's free"
+  if (
+    /\bhow long (does|will|can|do) (this|the|my) ?(call|conversation|chat|trial)?\s*(last|go on|go)\b/i.test(t) ||
+    /\bhow long can (i|we) (talk|chat|speak|stay)\b/i.test(t) ||
+    /^[\s,]*(the|this|my)\s+(phone\s+)?(call|trial)[\s.?!]*$/i.test(t) ||
+    /\blimit\b.*\b(with you|to talk|(on|for) (this|the|my) call)\b|\b(talk|call|time|trial) limit\b/i.test(t) ||
+    /\bis there (a|any) (time |call |talk )?limit[\s.?!]*$/i.test(t) ||
+    /^[\s,]*(and|so|but|oh)?[\s,]*(it['’]?s|it is|this is|is this|is it|that['’]?s)\s+(really\s+|totally\s+|completely\s+)?free\b/i.test(t)
+  ) {
+    return true;
+  }
   // Avoid stealing "how long is the flight" — require plan/free/trial/cost cues
   const hasPlanCue =
     /\b(free|trial|subscribe|subscription|minutes?|unlimited|no charge|pricing|plan|pay|cost|limit|usage)\b/i.test(
@@ -134,6 +145,25 @@ function billingReply(session, text = "") {
 }
 
 /** Extra session instruction so chat path stays honest even without fast path. */
+/**
+ * Appended to every model turn: a missed billing question still can't get "free with no limit"
+ * (the session-level facts alone were ignored on a production trial call).
+ */
+function billingTurnNote(session) {
+  const mode = session?.billingMode || "legacy";
+  const max = Math.floor(Number(session?.maxBillableSeconds) || 0);
+  if (mode === "trial" && max > 0) {
+    return ` This call is a free trial that lasts ${max} seconds. If asked about cost, free time, or limits, say exactly that; never say it is free with no limit or unlimited.`;
+  }
+  if (mode === "subscriber" && max > 0) {
+    return ` The caller has about ${max} seconds left on their plan. If asked about time or cost, say that; never say it is free or unlimited.`;
+  }
+  if (mode === "subscriber_platinum" || mode === "overage") {
+    return " If asked about time or cost, point to buddycallai dot com; never say it is free or unlimited.";
+  }
+  return "";
+}
+
 function billingInstruction(session) {
   // Plan list too, so follow-ups ("which plan has the most minutes?") are answered from facts
   return `${sessionBillingFacts(session)} ${PLAN_CATALOG_FACTS}`;
@@ -172,5 +202,6 @@ module.exports = {
   isPlanCatalogQuestion,
   billingReply,
   billingInstruction,
+  billingTurnNote,
   formatSecondsFriendly,
 };

@@ -13,7 +13,9 @@ const {
   isPlanCatalogQuestion,
   billingReply,
   billingInstruction,
+  billingTurnNote,
 } = require("../utils/billingReply");
+const { SYSTEM_PROMPT } = require("../utils/callStore");
 
 let passed = 0;
 function check(name, fn) {
@@ -216,6 +218,52 @@ check("fallback billing reply is caller-facing (no internal rules spoken)", () =
     assert.ok(/buddycallai dot com/i.test(reply), reply);
     assert.ok(!/unlimited|no charge|completely free/i.test(reply), reply);
   }
+});
+
+// Production trial call (2026-10-28): the bot answered "There's no strict limit" and "Yes, chatting with me is free"
+check("trial-call wordings from the transcript email are billing questions", () => {
+  for (const t of [
+    "How long does this last?",
+    "How long does the call last?",
+    "the call.",
+    "No, I'm staying the limit with you.",
+    "And it's free.",
+    "So it's free?",
+    "How long can I talk?",
+    "Is there a time limit?",
+    "Is there a limit?",
+  ]) {
+    assert.ok(isBillingQuestion(t), t);
+  }
+});
+
+check("look-alike questions about other things stay out of billing", () => {
+  for (const t of [
+    "How long does the flight last?",
+    "How long does this medicine last?",
+    "What's the limit on my credit card?",
+    "Is there a limit on baggage?",
+    "What's the speed limit in Florida?",
+    "Is the museum free? I heard it's free on Sundays.",
+    "Do you have any restrictions?",
+  ]) {
+    assert.ok(!isBillingQuestion(t), t);
+  }
+});
+
+check("per-turn trial reminder: states the cap and forbids 'free with no limit'", () => {
+  const note = billingTurnNote({ billingMode: "trial", maxBillableSeconds: 60 });
+  assert.ok(/free trial/i.test(note) && /60 seconds/.test(note), note);
+  assert.ok(/never say/i.test(note) && /unlimited/i.test(note), note);
+  const sub = billingTurnNote({ billingMode: "subscriber", maxBillableSeconds: 600 });
+  assert.ok(/600 seconds/.test(sub) && /never say/i.test(sub), sub);
+  assert.strictEqual(billingTurnNote({ billingMode: "legacy" }), "");
+  assert.strictEqual(billingTurnNote(undefined), "");
+});
+
+// Same call: "I don't provide real-time updates" — it can check live weather, time, rates, etc.
+check("system prompt: never claim no real-time information", () => {
+  assert.ok(/never say you can't (give|provide|check) (live|real-time)/i.test(SYSTEM_PROMPT), SYSTEM_PROMPT.slice(0, 200));
 });
 
 // Local test call: "this call is free or what" went to chat ("check with your service provider")

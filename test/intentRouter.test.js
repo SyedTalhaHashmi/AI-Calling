@@ -13,6 +13,7 @@ const {
   extractRouteParts,
   isHotelPriceQuestion,
   mentionsFlights,
+  hotelTier,
   hasPhrase,
 } = require("../utils/intentRouter");
 
@@ -286,6 +287,17 @@ check("hotel price asks are told apart from hotel lists", () => {
   assert.strictEqual(isHotelPriceQuestion("Can you give me a nice average ticket per hotel, like $80 per night, please?"), true);
   assert.strictEqual(isHotelPriceQuestion("Give me the price for my hotel in Miami three nights"), true);
   assert.strictEqual(isHotelPriceQuestion("What are the best hotels in Miami?"), false);
+});
+
+check("hotel tier from the caller's words or budget", () => {
+  assert.strictEqual(hotelTier("like $80 per night"), "budget");
+  assert.strictEqual(hotelTier("a cheap hotel in Bogota"), "budget");
+  assert.strictEqual(hotelTier("under 100 dollars a night"), "budget");
+  assert.strictEqual(hotelTier("hotel barato en Cartagena"), "budget");
+  assert.strictEqual(hotelTier("a luxury hotel in Miami"), "luxury");
+  assert.strictEqual(hotelTier("five-star hotels"), "luxury");
+  assert.strictEqual(hotelTier("about $400 a night"), "luxury");
+  assert.strictEqual(hotelTier("hotels in Miami for 3 nights"), null);
 });
 
 check("a trip ask that mentions flights is recognised next to hotels", () => {

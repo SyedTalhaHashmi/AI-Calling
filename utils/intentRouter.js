@@ -129,6 +129,23 @@ function isHotelPriceQuestion(text) {
   );
 }
 
+/**
+ * "budget" / "luxury" from the caller's words or nightly budget ("$80 a night"), else null —
+ * so a budget caller isn't offered the Four Seasons.
+ */
+function hotelTier(text) {
+  const t = String(text || "").toLowerCase();
+  if (/\b(luxury|luxurious|five[- ]star|5[- ]star|high[- ]end|upscale|lujo|lujoso)\b/.test(t)) return "luxury";
+  if (/\b(cheap|cheapest|budget|affordable|inexpensive|economical|low[- ]cost|barat[oa]s?|econ[oó]mic[oa]s?)\b/.test(t)) return "budget";
+  const amount = t.match(/\$\s?(\d{2,4})\b|\b(\d{2,4})\s?(?:dollars|usd|bucks|d[oó]lares)\b/);
+  if (amount) {
+    const n = Number(amount[1] || amount[2]);
+    if (n <= 150) return "budget";
+    if (n >= 350) return "luxury";
+  }
+  return null;
+}
+
 /** Finding somewhere to eat — not any sentence with "food" or "eat" in it. */
 function isFoodQuestion(text) {
   const t = text || "";
@@ -557,6 +574,7 @@ module.exports = {
   isFoodQuestion,
   isHotelPriceQuestion,
   mentionsFlights,
+  hotelTier,
   isLocalServiceQuestion,
   extractTravelRoute,
   extractRouteIata,

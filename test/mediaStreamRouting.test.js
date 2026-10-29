@@ -9,6 +9,7 @@ const WebSocket = require("ws");
 const createMediaStreamHandler = require("../handlers/mediaStream");
 const { CallStore } = require("../utils/callStore");
 const createTimeService = require("../services/time");
+const { parseTravelDates, spokenDate } = require("../utils/travelDates");
 
 let passed = 0;
 async function check(name, fn) {
@@ -78,8 +79,8 @@ function stubServices({ weatherDelayMs = 0, webSearch = false, fxError = false, 
     placesService: places
       ? {
           enabled: true,
-          searchHotels: async (loc) => {
-            calls.push(["hotels", loc]);
+          searchHotels: async (loc, tier) => {
+            calls.push(tier ? ["hotels", loc, tier] : ["hotels", loc]);
             return loc ? placeList("Hotel") : { error: "Please share a city for hotel search." };
           },
           searchFood: async (loc) => {
@@ -94,6 +95,14 @@ function stubServices({ weatherDelayMs = 0, webSearch = false, fxError = false, 
           cheapestRoute: async (origin, destination) => {
             calls.push(["fare", origin, destination]);
             return { origin, destination, price: 410, currency: "USD", airline: "AV", returnAt: "2026-11-09" };
+          },
+          fareForTrip: async (origin, destination, d) => {
+            calls.push(["fareDates", origin, destination, d.departDate || d.window?.start || d.departMonth, d.returnDate || null]);
+            const departDate = d.departDate || d.window?.start || `${d.departMonth}-15`;
+            return {
+              origin, destination, price: 446, currency: "USD", airline: "LA", transfers: 1,
+              oneWay: !d.returnDate, departDate, returnDate: d.returnDate || null, match: "exact",
+            };
           },
         }
       : { enabled: false },
@@ -770,9 +779,10 @@ const weatherCall = (callId, args) => ({
       c,
       "Okay, that is fantastic. I have plans to travel from Bogota to Miami next Monday. Do you mind if you tell me the prices for the airline tickets and hotels?"
     );
-    assert.deepStrictEqual(c.calls, [["fare", "BOG", "MIA"], ["hotels", "Miami"]]);
+    const monday = parseTravelDates("next Monday").departDate;
+    assert.deepStrictEqual(c.calls, [["fareDates", "BOG", "MIA", monday, null], ["hotels", "Miami"]]);
     assert.ok(/^Reply in English only/.test(r), r);
-    assert.ok(/410 US dollars/.test(r) && /Avianca/.test(r), r);
+    assert.ok(/446 US dollars/.test(r) && /LATAM/.test(r) && r.includes(spokenDate(monday)), r);
     assert.ok(/typical nightly price range/i.test(r) && /Hotel One/.test(r), r);
     assert.deepStrictEqual(c.creates().at(-1).response.tools, []);
     c.close();
@@ -783,8 +793,13 @@ const weatherCall = (callId, args) => ({
     await ask(c, "I have plans to travel from Bogota to Miami next Monday. What are the prices for airline tickets and hotels?");
     await ask(c, "Excuse me, sorry, are you there?");
     const r = await ask(c, "Do you mind if you give me an average price or something?");
-    assert.deepStrictEqual(c.calls.filter(([n]) => n === "fare"), [["fare", "BOG", "MIA"], ["fare", "BOG", "MIA"]]);
-    assert.ok(/410 US dollars/.test(r), r);
+    // Same route and the same date (next Monday) as the trip question
+    const monday = parseTravelDates("next Monday").departDate;
+    assert.deepStrictEqual(c.calls.filter(([n]) => n === "fareDates"), [
+      ["fareDates", "BOG", "MIA", monday, null],
+      ["fareDates", "BOG", "MIA", monday, null],
+    ]);
+    assert.ok(/446 US dollars/.test(r), r);
     c.close();
   });
 
@@ -793,8 +808,9 @@ const weatherCall = (callId, args) => ({
     const q = await ask(c, "Do you mind if you give me an average price or something?");
     assert.ok(/flying from/i.test(q), q);
     const r = await ask(c, "Bogota to Miami leaving on Monday to Friday next week.");
-    assert.deepStrictEqual(c.calls, [["fare", "BOG", "MIA"]]);
-    assert.ok(/410 US dollars/.test(r), r);
+    const d = parseTravelDates("Monday to Friday next week");
+    assert.deepStrictEqual(c.calls, [["fareDates", "BOG", "MIA", d.departDate, d.returnDate]]);
+    assert.ok(/446 US dollars round trip/.test(r) && r.includes(spokenDate(d.returnDate)), r);
     c.close();
   });
 
@@ -812,10 +828,38 @@ const weatherCall = (callId, args) => ({
     const c = await startCall({ routerMode: "regex", places: true });
     const first = await ask(c, "Do you mind if you give me the price for my hotel in Miami three nights starting on next Monday?");
     assert.ok(/typical nightly price range/i.test(first) && /Miami/.test(first), first);
+    assert.ok(/3 nights/.test(first) && /total/i.test(first) && /in (January|February|March|April|May|June|July|August|September|October|November|December)/.test(first), first);
     const r = await ask(c, "Can you give me a nice average ticket per hotel, like $80 per night, please?");
-    assert.deepStrictEqual(c.calls, [["hotels", "Miami"], ["hotels", "Miami"]]);
+    // An $80 budget searches budget hotels, so the Four Seasons isn't offered to a budget caller
+    assert.deepStrictEqual(c.calls, [["hotels", "Miami"], ["hotels", "Miami", "budget"]]);
+    assert.ok(/3 nights/.test(r), "the stay length is remembered");
     assert.ok(/^Reply in English only/.test(r) && /typical nightly price range/i.test(r), r);
     assert.ok(/\$80 per night/.test(r) && /not live/i.test(r), r);
+    c.close();
+  });
+
+  await check("regex mode: a date given right after a fare re-prices that route for the date ('Next week.')", async () => {
+    const c = await startCall({ routerMode: "regex", travel: true });
+    await ask(c, "I want to travel from Milan to...");
+    await ask(c, "Rome.");
+    const r = await ask(c, "Next week.");
+    const w = parseTravelDates("next week").window;
+    assert.deepStrictEqual(c.calls, [["fare", "MIL", "FCO"], ["fareDates", "MIL", "FCO", w.start, null]]);
+    assert.ok(/Milan to Rome/.test(r), r);
+    c.close();
+  });
+
+  await check("regex mode: a fare question with no dates still uses recent fares (unchanged)", async () => {
+    const c = await startCall({ routerMode: "regex", travel: true });
+    await ask(c, "How much is a flight from Bogota to Miami?");
+    assert.deepStrictEqual(c.calls, [["fare", "BOG", "MIA"]]);
+    c.close();
+  });
+
+  await check("regex mode: luxury hotel price ask searches luxury hotels", async () => {
+    const c = await startCall({ routerMode: "regex", places: true });
+    await ask(c, "How much is a luxury hotel in Miami per night?");
+    assert.deepStrictEqual(c.calls, [["hotels", "Miami", "luxury"]]);
     c.close();
   });
 

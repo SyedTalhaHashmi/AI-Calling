@@ -20,6 +20,7 @@ const {
   extractCurrencies,
   isHotelPriceQuestion,
   mentionsFlights,
+  hotelTier,
 } = require("../utils/intentRouter");
 const {
   formatWeatherFact,
@@ -29,10 +30,12 @@ const {
   cityName,
 } = require("../utils/spokenFacts");
 const { rememberTrip, recentTrip, completeRoute, shortPlaceReply } = require("../utils/tripContext");
+const { parseTravelDates } = require("../utils/travelDates");
 const {
   updateReplyLanguage,
   languageInstruction,
   languageLabel,
+  wordCount,
 } = require("../utils/replyLanguage");
 const {
   isBillingQuestion,
@@ -616,6 +619,11 @@ function createMediaStreamHandler({
             // Metrics helpers bound to this turn (pass results through unchanged)
             const sendReply = (reply, opts = {}) => sendReplyBase(reply, { ...opts, turnId });
             const timed = (label, fn) => metrics.time(turnId, label, fn);
+            // Fare for the caller's dates when they gave any, else the recent cheapest (any dates)
+            const lookupFare = (origin, destination, d) =>
+              d && (d.departDate || d.departMonth || d.window)
+                ? timed("travel_fare", () => travelService.fareForTrip(origin, destination, d))
+                : timed("travel_fare", () => travelService.cheapestRoute(origin, destination));
 
             const trimmed = (text != null && text !== "" ? String(text).trim() : "");
             if (!trimmed) {
@@ -745,13 +753,25 @@ function createMediaStreamHandler({
             if (awaitingTimeCity && intent === "chat" && timeService?.resolvePlace(trimmed)) {
               intent = "time";
             }
+            // Travel dates said this turn ("next Monday", "Monday to Friday next week", "in December")
+            const dates = parseTravelDates(trimmed);
+            const hasDates = Boolean(dates.departDate || dates.departMonth || dates.window);
             if (awaiting && intent === "chat") {
               if (awaiting.kind === "fare") {
                 const r = completeRoute(trimmed, awaiting);
-                if (r.origin !== awaiting.origin || r.destination !== awaiting.destination) intent = "travel_price";
+                if (r.origin !== awaiting.origin || r.destination !== awaiting.destination || hasDates) intent = "travel_price";
               } else if (extractLocation(trimmed) || shortPlaceReply(trimmed)) {
                 intent = awaiting.kind;
               }
+            }
+            // "Next week." right after a fare answer: price that route for those dates
+            if (
+              intent === "chat" &&
+              hasDates &&
+              wordCount(trimmed) <= 8 &&
+              sessionRef?.lastFareTurn === sessionRef?.callerTurns - 1
+            ) {
+              intent = "travel_price";
             }
             logger.info({ callSid, intent }, "Intent resolved");
             metrics.setRoute(turnId, "fast_path", intent);
@@ -893,14 +913,17 @@ function createMediaStreamHandler({
               const priceAsked = kind === "hotel" && isHotelPriceQuestion(trimmed);
               const withFare =
                 kind === "hotel" && route.origin && route.destination && mentionsFlights(trimmed) && travelService?.enabled;
-              if (kind === "hotel") rememberTrip(sessionRef, { hotelCity: city, ...(withFare ? route : {}) });
+              // Stay dates / nights from this turn, else from the trip ("$80 a night?" keeps "three nights")
+              const stay = hasDates || dates.nights ? dates : trip?.dates || null;
+              if (kind === "hotel") {
+                rememberTrip(sessionRef, { hotelCity: city, ...(withFare ? route : {}), dates: stay });
+                if (withFare && sessionRef) sessionRef.lastFareTurn = sessionRef.callerTurns;
+              }
               (async () => {
                 const [fare, result] = await Promise.all([
-                  withFare
-                    ? timed("travel_fare", () => travelService.cheapestRoute(route.origin, route.destination))
-                    : null,
+                  withFare ? lookupFare(route.origin, route.destination, stay) : null,
                   kind === "hotel"
-                    ? timed("places_hotels", () => placesService.searchHotels(city))
+                    ? timed("places_hotels", () => placesService.searchHotels(city, hotelTier(trimmed) || undefined))
                     : timed("places_food", () => placesService.searchFood(city)),
                 ]);
                 // Price asks (and trip asks) get a typical nightly range next to the real hotels
@@ -912,6 +935,9 @@ function createMediaStreamHandler({
                       places: result.error ? [] : result.places,
                       fareFact: fare && !fare.error ? formatFareFact(fare) : "",
                       question: trimmed,
+                      nights: stay?.nights || null,
+                      month: stay?.departMonth || null,
+                      tier: hotelTier(trimmed),
                     }),
                     turnId,
                     "Hotel price turn"
@@ -932,6 +958,9 @@ function createMediaStreamHandler({
               if (!origin && !destination && trip?.origin && trip?.destination) {
                 ({ origin, destination } = trip);
               }
+              // Dates from this turn, else from the pending question or the same trip
+              const sameTrip = trip && trip.origin === origin && trip.destination === destination;
+              const fareDates = hasDates ? dates : awaiting?.dates || (sameTrip ? trip.dates : null) || null;
               logger.info(
                 {
                   callSid,
@@ -942,7 +971,7 @@ function createMediaStreamHandler({
                 "Travel fast path triggered"
               );
               if (!origin || !destination) {
-                if (sessionRef) sessionRef.awaiting = { kind: "fare", origin, destination };
+                if (sessionRef) sessionRef.awaiting = { kind: "fare", origin, destination, dates: fareDates };
                 sendReply(
                   origin
                     ? `Sure. And where are you flying to from ${cityName(origin)}?`
@@ -953,12 +982,11 @@ function createMediaStreamHandler({
                 );
                 return;
               }
-              rememberTrip(sessionRef, { origin, destination });
+              rememberTrip(sessionRef, { origin, destination, dates: fareDates });
+              if (sessionRef) sessionRef.lastFareTurn = sessionRef.callerTurns;
               (async () => {
-                const result = await timed("travel_fare", () =>
-                  travelService.cheapestRoute(origin, destination)
-                );
-                sendReply(formatFareFact(result), { multilingual: !result.error, maxWords: result.error ? undefined : 45 });
+                const result = await lookupFare(origin, destination, fareDates);
+                sendReply(formatFareFact(result), { multilingual: !result.error, maxWords: result.error ? undefined : 50 });
               })();
               return;
             }

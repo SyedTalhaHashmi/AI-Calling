@@ -64,7 +64,11 @@ function stubServices(overrides = {}) {
       searchFood: rec("places.searchFood", { places: [{ name: "F" }] }),
       searchText: rec("places.searchText", { places: [{ name: "P" }] }),
     },
-    travelService: { enabled: true, cheapestRoute: rec("travel.cheapestRoute", { price: 376 }) },
+    travelService: {
+      enabled: true,
+      cheapestRoute: rec("travel.cheapestRoute", { price: 376 }),
+      fareForTrip: rec("travel.fareForTrip", { price: 446, match: "exact" }),
+    },
     flightsService: { enabled: true, getFlightStatus: rec("flights.getFlightStatus", { message: "ok" }) },
     sportsService: {
       enabled: true,
@@ -173,6 +177,17 @@ const ALL_TOOLS = [
     const ex = createToolExecutor({ services, logger, deadlineMs: 1000 });
     await ex.execute("get_flight_fare", { origin: "bog", destination: "mia" });
     assert.deepStrictEqual(calls, [["travel.cheapestRoute", "BOG", "MIA"]]);
+  });
+
+  await check("get_flight_fare with dates prices those dates (one-way unless a return date)", async () => {
+    const { services, calls } = stubServices();
+    const ex = createToolExecutor({ services, logger, deadlineMs: 1000 });
+    await ex.execute("get_flight_fare", { origin: "bog", destination: "mia", departure_date: "2026-11-02", return_date: "2026-11-06" });
+    await ex.execute("get_flight_fare", { origin: "bog", destination: "mia", departure_date: "2026-12" });
+    assert.deepStrictEqual(calls, [
+      ["travel.fareForTrip", "BOG", "MIA", { departDate: "2026-11-02", returnDate: "2026-11-06", departMonth: null, oneWay: false }],
+      ["travel.fareForTrip", "BOG", "MIA", { departDate: null, returnDate: null, departMonth: "2026-12", oneWay: true }],
+    ]);
   });
 
   await check("get_flight_status strips spaces from flight number", async () => {

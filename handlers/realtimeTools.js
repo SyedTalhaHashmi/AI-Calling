@@ -75,12 +75,17 @@ const TOOL_DEFS = {
   },
   get_flight_fare: {
     description:
-      "Get the cheapest recently seen airfare between two airports (recent fares, not a live booking quote). Convert city names to IATA airport codes yourself (Bogota→BOG, Miami→MIA, Madrid→MAD). If origin or destination is missing, ask the caller instead of calling. The fare is the cheapest across all airlines (it can't be filtered by airline): always say the airline by name (airlineName; never read the code, and leave it out if airlineName is empty), say round trip if returnAt is set or one-way if not, say it's from recent fares rather than their exact dates, and if the caller asked for a specific airline and the result is a different one, say this fare is with that other airline, not theirs.",
+      "Get the cheapest recently seen airfare between two airports (recent fares, not a live booking quote). Convert city names to IATA airport codes yourself (Bogota→BOG, Miami→MIA, Madrid→MAD). If origin or destination is missing, ask the caller instead of calling. The fare is the cheapest across all airlines (it can't be filtered by airline): always say the airline by name (airlineName; never read the code, and leave it out if airlineName is empty), say round trip if returnAt is set or one-way if not, with dates, say the departDate (and returnDate) in the result; if match is near, other_dates, or month, say plainly those aren't their exact dates; without dates, say it's from recent fares rather than their exact dates; and if the caller asked for a specific airline and the result is a different one, say this fare is with that other airline, not theirs.",
     parameters: {
       type: "object",
       properties: {
         origin: { type: "string", description: "Origin IATA code, e.g. BOG" },
         destination: { type: "string", description: "Destination IATA code, e.g. MIA" },
+        departure_date: {
+          type: "string",
+          description: "Departure date the caller gave, YYYY-MM-DD (or YYYY-MM for just a month). Work it out from today's date. Omit if they gave none.",
+        },
+        return_date: { type: "string", description: "Return date YYYY-MM-DD, only for a round trip. Omit for one-way." },
       },
       required: ["origin", "destination"],
     },
@@ -347,10 +352,21 @@ function createToolExecutor({ services, logger, deadlineMs = 2500, now = () => D
     },
 
     get_flight_fare(args) {
-      return s.travelService.cheapestRoute(
-        String(args.origin || "").toUpperCase(),
-        String(args.destination || "").toUpperCase()
-      );
+      const origin = String(args.origin || "").toUpperCase();
+      const destination = String(args.destination || "").toUpperCase();
+      const dep = String(args.departure_date || "");
+      const ret = String(args.return_date || "");
+      if (/^\d{4}-\d{2}(-\d{2})?$/.test(dep) && s.travelService.fareForTrip) {
+        const exactDay = /^\d{4}-\d{2}-\d{2}$/.test(dep);
+        const returnDate = /^\d{4}-\d{2}-\d{2}$/.test(ret) ? ret : null;
+        return s.travelService.fareForTrip(origin, destination, {
+          departDate: exactDay ? dep : null,
+          returnDate,
+          departMonth: exactDay ? null : dep,
+          oneWay: !returnDate,
+        });
+      }
+      return s.travelService.cheapestRoute(origin, destination);
     },
 
     get_flight_status(args) {

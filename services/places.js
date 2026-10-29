@@ -47,10 +47,12 @@ function createPlacesService(apiKey, logger) {
     }
   }
 
-  function searchHotels(location) {
+  /** tier: "budget" | "luxury" | undefined — matches the hotels named to the caller's budget. */
+  function searchHotels(location, tier) {
     const loc = String(location || "").trim();
     if (!loc) return Promise.resolve({ error: "Please share a city for hotel search." });
-    return search(`best hotels in ${loc}`, `hotel:${loc.toLowerCase()}`);
+    const kind = tier === "budget" ? "budget hotels" : tier === "luxury" ? "luxury hotels" : "best hotels";
+    return search(`${kind} in ${loc}`, `hotel:${tier || "best"}:${loc.toLowerCase()}`);
   }
 
   function searchFood(location, cuisine) {

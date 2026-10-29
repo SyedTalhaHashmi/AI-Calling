@@ -1,8 +1,10 @@
 const axios = require("axios");
 const { MemoryCache } = require("./cache");
-const { airlineName } = require("../utils/spokenFacts");
+const { airlineName, cityName } = require("../utils/spokenFacts");
 
 const BASE = "https://api.travelpayouts.com/v1/prices/cheap";
+/** Fares for specific dates or a month (same token; Travelpayouts' recommended replacement for /v1/prices/cheap). */
+const DATES_URL = "https://api.travelpayouts.com/aviasales/v3/prices_for_dates";
 
 /** English words that look like IATA — never send to Travelpayouts. */
 const IATA_STOPWORDS = new Set([
@@ -16,6 +18,7 @@ function createTravelService(token, logger) {
     return {
       enabled: false,
       cheapestRoute: async () => ({ error: "Travel API is not configured." }),
+      fareForTrip: async () => ({ error: "Travel API is not configured." }),
     };
   }
 
@@ -84,9 +87,98 @@ function createTravelService(token, logger) {
     }
   }
 
+  /** One /prices_for_dates request → items (cheapest first); throws on network / HTTP errors. */
+  async function pricesForDates(params) {
+    const res = await axios.get(DATES_URL, {
+      params: { currency: "usd", sorting: "price", direct: "false", unique: "false", ...params },
+      headers: { "x-access-token": token, "Accept-Encoding": "gzip, deflate" },
+      timeout: 1800,
+    });
+    return (res.data?.data || [])
+      .filter((it) => Number(it.price) > 0 && it.departure_at)
+      .sort((a, b) => Number(a.price) - Number(b.price));
+  }
+
+  const day = (at) => String(at || "").slice(0, 10);
+  const daysApart = (a, b) => Math.abs(Date.parse(`${a}T00:00:00Z`) - Date.parse(`${b}T00:00:00Z`)) / 864e5;
+
+  /**
+   * Cheapest recent fare for the caller's dates. Tries the exact date, then that month filtered to
+   * the date (or "next week" window), then nearby days, then the month's cheapest — and labels
+   * which one it found (match: exact | window | near | other_dates | month) so it's never passed
+   * off as their date. At most two requests.
+   */
+  async function fareForTrip(origin, destination, { departDate, returnDate, departMonth, window, oneWay } = {}) {
+    const from = String(origin || "").toUpperCase();
+    const to = String(destination || "").toUpperCase();
+    if (!/^[A-Z]{3}$/.test(from) || !/^[A-Z]{3}$/.test(to)) {
+      return { error: "Which cities are you flying between?" };
+    }
+    let isOneWay = oneWay ?? !returnDate;
+    let base = { origin: from, destination: to, one_way: String(isOneWay) };
+    const back = !isOneWay && returnDate ? returnDate : null;
+    const month = departDate ? departDate.slice(0, 7) : departMonth;
+    const cacheKey = `dates:${from}:${to}:${departDate || ""}:${back || ""}:${month || ""}:${window?.start || ""}:${isOneWay}`;
+    const cached = cache.get(cacheKey);
+    if (cached) return cached;
+
+    const pack = (it, match) => ({
+      origin: from,
+      destination: to,
+      price: Number(it.price),
+      currency: "USD",
+      airline: it.airline || "",
+      airlineName: airlineName(it.airline),
+      departDate: day(it.departure_at),
+      returnDate: it.return_at ? day(it.return_at) : null,
+      transfers: it.transfers ?? null,
+      return_transfers: it.return_transfers ?? null,
+      oneWay: isOneWay,
+      match,
+      requestedDate: departDate || null,
+      month: month || null,
+    });
+
+    try {
+      if (departDate) {
+        const exact = await pricesForDates({ ...base, departure_at: departDate, ...(back ? { return_at: back } : {}), limit: 10 });
+        if (exact.length) return cache.set(cacheKey, pack(exact[0], "exact"), 10 * 60 * 1000);
+      }
+      if (!month) return { error: "Which dates are you thinking of?" };
+      let items = await pricesForDates({ ...base, departure_at: month, ...(back ? { return_at: back.slice(0, 7) } : {}), limit: 100 });
+      // Trip type not said and nothing one-way that month (live: Miami → Bogotá in December): try round trip
+      if (!items.length && oneWay == null && isOneWay) {
+        isOneWay = false;
+        base = { ...base, one_way: "false" };
+        items = await pricesForDates({ ...base, departure_at: month, limit: 100 });
+      }
+      let found = null;
+      if (departDate) {
+        const sameDay = items.find((it) => day(it.departure_at) === departDate);
+        const near = items.find((it) => daysApart(day(it.departure_at), departDate) <= 3);
+        found = sameDay ? pack(sameDay, "exact") : near ? pack(near, "near") : items[0] ? pack(items[0], "other_dates") : null;
+      } else if (window) {
+        const inWeek = items.find((it) => day(it.departure_at) >= window.start && day(it.departure_at) <= window.end);
+        found = inWeek ? pack(inWeek, "window") : items[0] ? pack(items[0], "other_dates") : null;
+      } else if (items[0]) {
+        found = pack(items[0], "month");
+      }
+      if (!found) {
+        return {
+          error: `I couldn't find recent fares from ${cityName(from)} to ${cityName(to)} for those dates. Google Flights or Kayak will show live prices.`,
+        };
+      }
+      return cache.set(cacheKey, found, 10 * 60 * 1000);
+    } catch (err) {
+      logger.warn({ err: err.message, from, to }, "Travelpayouts dates request failed");
+      return { error: "I couldn't get flight prices right now. Google Flights or Kayak will show live prices." };
+    }
+  }
+
   return {
     enabled: true,
     cheapestRoute,
+    fareForTrip,
   };
 }
 

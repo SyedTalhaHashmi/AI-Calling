@@ -100,14 +100,29 @@ check("hotel price instruction: typical nightly range, labelled as not live, wit
   assert.ok(/Four Seasons Hotel Miami, rated 4\.7/.test(r), r);
   assert.ok(/\$80 per night/.test(r), "the caller's budget is passed on so it can be judged");
   assert.ok(/don't say you'll check/i.test(r), r);
-  assert.ok(/never give a price or a price level for a named hotel/i.test(r), "no invented per-hotel prices");
+  assert.ok(/never give a price for a named hotel/i.test(r), "no invented per-hotel prices");
   assert.ok(/up to 50 words/.test(r), r);
+});
+
+check("hotel price instruction: nights → total for the stay; month → season", () => {
+  const r = hotelPriceInstruction("English", { city: "Miami", places: [], question: "q", nights: 3, month: "2026-12" });
+  assert.ok(/3 nights/.test(r) && /total/i.test(r), r);
+  assert.ok(/in December/.test(r) && /season/i.test(r), r);
+  const plain = hotelPriceInstruction("English", { city: "Miami", places: [], question: "q" });
+  assert.ok(!/nights:|season/i.test(plain), plain);
 });
 
 check("hotel price instruction still gives a typical range when the hotel search found nothing", () => {
   const r = hotelPriceInstruction("English", { city: "Miami", places: [], question: "How much is a hotel in Miami?" });
   assert.ok(/typical nightly price range/i.test(r) && /Miami/.test(r), r);
   assert.ok(!/These hotels/.test(r), r);
+});
+
+check("hotel price instruction: no price word for a named hotel unless given (live: Places had none)", () => {
+  const r = hotelPriceInstruction("English", { city: "Miami", places: hotels.places, question: "q" });
+  assert.ok(/don't call a named hotel budget, mid-range, expensive, or luxury/i.test(r), r);
+  const budget = hotelPriceInstruction("English", { city: "Miami", places: hotels.places, question: "q", tier: "budget" });
+  assert.ok(/search for budget hotels/i.test(budget), budget);
 });
 
 check("hotel price instruction for a trip says the fare first, word for word", () => {

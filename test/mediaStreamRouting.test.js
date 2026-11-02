@@ -912,6 +912,63 @@ const weatherCall = (callId, args) => ({
     c.close();
   });
 
+  await check("time messages are out of band (no caller audio) and in the call's language", async () => {
+    // Production 2026-11-01: the time-up message came out as "Sure, I'm checking the time now"
+    const twilioClient = { calls: () => ({ update: async () => {} }) };
+    const c = await startCall({
+      routerMode: "regex",
+      session: { maxBillableSeconds: 4, replyLanguage: "zh" },
+      twilioClient,
+      timeWarningSeconds: 2,
+    });
+    await waitFor(() => c.creates().some((m) => /time for this call is up/i.test(m.response.instructions)), 6000);
+    const timeMsgs = c.creates().filter((m) => /seconds left|time for this call is up/i.test(m.response.instructions));
+    assert.ok(timeMsgs.length >= 1, "time messages sent");
+    for (const m of timeMsgs) {
+      assert.strictEqual(m.response.conversation, "none", "no conversation context");
+      assert.deepStrictEqual(m.response.input, []);
+      assert.ok(/^Say this in Chinese and nothing else/.test(m.response.instructions), m.response.instructions);
+    }
+    c.close();
+  });
+
+  await check("English call: time-up is said word for word", async () => {
+    const twilioClient = { calls: () => ({ update: async () => {} }) };
+    const c = await startCall({ routerMode: "regex", session: { maxBillableSeconds: 1 }, twilioClient });
+    await waitFor(() => c.creates().some((m) => /time for this call is up/i.test(m.response.instructions)), 3000);
+    const up = c.creates().find((m) => /time for this call is up/i.test(m.response.instructions));
+    assert.ok(/^Say exactly this and nothing else: Your time for this call is up/.test(up.response.instructions), up.response.instructions);
+    c.close();
+  });
+
+  await check("echo: the caller's phone playing Buddy back is not answered or put in the transcript", async () => {
+    // Production 2026-10-30: the greeting came back as "Hi, I'm Bunny, your AI..." and Buddy answered it
+    const c = await startCall({ routerMode: "regex" });
+    c.emit({ type: "response.output_audio_transcript.done", transcript: "Hi! I'm Buddy, your AI friend. Ask me anything you want." });
+    await sleep(20);
+    await c.say("Hi, I'm Bunny, your AI...");
+    await sleep(30);
+    assert.strictEqual(c.creates().length, 1, "no reply to the echo");
+    // A real question right after is still answered, including one that reuses a word or two
+    await c.say("Hi Buddy, what can you help me with today?");
+    await waitFor(() => c.creates().length === 2);
+    const lines = c.callStore.get("CAtest").transcriptLines;
+    assert.ok(!lines.some((l) => /Bunny/.test(l)), lines.join(" | "));
+    c.close();
+  });
+
+  await check("weather 'Medellín, Colombia' looks up Medellín, and a rain follow-up stays on Medellín", async () => {
+    // Production 2026-10-31: Bogotá (the country's default city) was fetched both times
+    const c = await startCall({ routerMode: "regex" });
+    await c.say("Do you mind if you give me the weather in Medellín, Colombia?");
+    await waitFor(() => c.calls.length === 1);
+    await c.completeLast([]);
+    await c.say("Do you think it's going to rain today?");
+    await waitFor(() => c.calls.length === 2);
+    assert.deepStrictEqual(c.calls, [["weather", "Medellín", "CO"], ["weather", "Medellín", "CO"]]);
+    c.close();
+  });
+
   console.log(`\n${process.exitCode ? "Some checks failed" : `All ${passed} checks passed`}`);
   process.exit(process.exitCode || 0);
 })();

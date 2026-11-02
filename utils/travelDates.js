@@ -56,7 +56,9 @@ function dateMentions(t, today) {
   };
 
   for (const m of t.matchAll(/\b(day after tomorrow|pasado mañana)/giu)) add(m.index, m[0].length, "date", addDays(today, 2));
-  for (const m of t.matchAll(/(?<!por la |de la |esta )\b(tomorrow|mañana)(?![\p{L}])/giu)) add(m.index, m[0].length, "date", addDays(today, 1));
+  // "la mañana" is the morning ("saliendo en la mañana" — production 2026-10-29 read it as a second
+  // "tomorrow" and moved the return a week); bare "mañana" is tomorrow
+  for (const m of t.matchAll(/(?<!\bla |esta )\b(tomorrow|mañana)(?![\p{L}])/giu)) add(m.index, m[0].length, "date", addDays(today, 1));
   for (const m of t.matchAll(/\b(today|tonight|hoy)\b/giu)) add(m.index, m[0].length, "date", today);
 
   // "November 10th" / "Nov 10" / "10th of November" / "10 de noviembre"
@@ -138,7 +140,7 @@ function parseTravelDates(text, now = Date.now()) {
   }
 
   let oneWay = null;
-  if (/\bone[- ]way\b|\bsolo ida\b|\bida solamente\b|\bsolo de ida\b/.test(t)) oneWay = true;
+  if (/\bone[- ]way\b|\bsolo ida\b|\bida solamente\b|\bsolo de ida\b|\buna sola v[ií]a\b|\bs[oó]lo ida\b/.test(t)) oneWay = true;
   else if (returnDate || /\bround[- ]?trip\b|\breturn(?:ing)?\b|\bcoming back\b|\bback on\b|\bida y vuelta\b|\bregres/.test(t)) oneWay = false;
 
   return { departDate, returnDate, departMonth, window, oneWay, nights };

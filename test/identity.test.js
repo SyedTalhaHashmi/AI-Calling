@@ -124,4 +124,40 @@ check("system prompt: spoken numbers, no emojis, spelled-out websites, local eme
   assert.ok(/911 or their local emergency number/.test(SYSTEM_PROMPT), "emergency wording");
 });
 
+check("recording questions → not recorded; account holders get an emailed transcript", () => {
+  // Production 2026-10-29: "Is this thing recorded?" → "Yes, this call is being recorded"
+  for (const t of [
+    "Is this thing recorded?",
+    "Is this call being recorded?",
+    "Are you recording me?",
+    "Are our calls recorded?",
+    "Do you record these calls?",
+    "¿Me estás grabando?",
+    "¿Se graba la llamada?",
+  ]) {
+    const r = identityReply(t);
+    assert.ok(r && /isn't recorded/.test(r) && /transcript/.test(r) && /registered email/.test(r), `${t} → ${r}`);
+  }
+  for (const t of ["The song was recorded in 1970.", "How do I record a podcast?", "What's the record for the 100 meters?"]) {
+    assert.strictEqual(identityReply(t), null, t);
+  }
+});
+
+check("texting questions → voice only, no text chat", () => {
+  // Production 2026-10-30: "Do you text?" → "Yes, I can also text… the text chat is free"
+  for (const t of ["Do you text?", "Can I text you?", "Are the texts free?", "Do you have text chat?", "¿Tienes mensajes de texto?"]) {
+    const r = identityReply(t);
+    assert.ok(r && /voice only/.test(r) && /no texting/.test(r), `${t} → ${r}`);
+  }
+  // The model answers these (it gives a website instead of sending one)
+  for (const t of ["Can you text me the link to book that flight?", "How do I write a text to my boss?"]) {
+    assert.strictEqual(identityReply(t), null, t);
+  }
+});
+
+check("prompt: ask to repeat instead of guessing; not recorded; voice only", () => {
+  assert.ok(/ask them to repeat/i.test(SYSTEM_PROMPT) && /never guess/i.test(SYSTEM_PROMPT));
+  assert.ok(/not recorded/.test(SYSTEM_PROMPT) && /voice only/.test(SYSTEM_PROMPT));
+});
+
 if (!process.exitCode) console.log(`\nAll ${passed} checks passed`);

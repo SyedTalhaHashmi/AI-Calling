@@ -19,6 +19,7 @@ const LANG_NAMES = {
   ar: "Arabic",
   ko: "Korean",
   ru: "Russian",
+  sv: "Swedish",
 };
 
 function wordCount(text) {
@@ -54,6 +55,31 @@ const LANGUAGE_WORDS = {
   arabic: "ar",
   korean: "ko",
   russian: "ru",
+  swedish: "sv",
+  svenska: "sv",
+  // Spanish names (production 2026-10-31: "¿podemos hablar en italiano?" was refused three times)
+  "inglés": "en",
+  ingles: "en",
+  "francés": "fr",
+  frances: "fr",
+  chino: "zh",
+  "mandarín": "zh",
+  "japonés": "ja",
+  japones: "ja",
+  "alemán": "de",
+  aleman: "de",
+  "árabe": "ar",
+  arabe: "ar",
+  coreano: "ko",
+  ruso: "ru",
+  hebreo: "he",
+  sueco: "sv",
+  // Italian names
+  inglese: "en",
+  spagnolo: "es",
+  francese: "fr",
+  cinese: "zh",
+  tedesco: "de",
 };
 const LANGUAGE_WORD_RE = Object.keys(LANGUAGE_WORDS).join("|");
 
@@ -63,18 +89,23 @@ const LANGUAGE_WORD_RE = Object.keys(LANGUAGE_WORDS).join("|");
  */
 const TRANSLATION_ASK = new RegExp(
   `\\b(how (do|would|can|could) (you|i|we) say|how to say|translate|translation|what does .+ mean|what(?:'s| is) .+ in (?:${LANGUAGE_WORD_RE})` +
+    `|c[oó]mo se dice|tradu(?:ce|cir|cci[oó]n|zca|ceme|cirme)|qu[eé] significa|come si dice|tradurre|traduzione` +
     // Words for someone else ("ask the seller…", "say this…"); "tell me in Spanish" is still a switch
     `|(?:say|ask|tell|write|order)\\s+(?:the|him|her|them|my|your|a|an|someone|somebody|people|this|that|to)\\b.+\\bin (?:${LANGUAGE_WORD_RE}))(?![\\p{L}])`,
   "iu"
 );
 const CAPABILITY_ASK = new RegExp(
-  `\\b(?:(?:do|can|could) you (?:also |even )?(?:speak|understand|know)|if you (?:can|could) speak|are you able to speak)` +
-    // "do you speak, by any chance, Italian?" / "a little Arabic"
-    `(?:,?\\s+(?:by any chance|also|even|perhaps|maybe|any|some|a little|a bit of)\\b,?)*\\s+(${LANGUAGE_WORD_RE})(?![\\p{L}])`,
+  `\\b(?:(?:do|can|could) you (?:also |even )?(?:speak|understand|know)|if you (?:can|could) speak|are you able to speak` +
+    // "¿Tú hablas italiano?" / "¿Sabes hablar chino?" / "Parli inglese?"
+    `|(?:t[uú]\\s+)?(?:hablas|sabes hablar|puedes hablar|entiendes)|(?:tu\\s+)?(?:parli|sai parlare))` +
+    // "do you speak, by any chance, Italian?" / "a little Arabic" / "¿hablas también chino?"
+    `(?:,?\\s+(?:by any chance|also|even|perhaps|maybe|any|some|a little|a bit of|tambi[eé]n|un poco de|algo de|anche)(?![\\p{L}]),?)*` +
+    `\\s+(?:en\\s+|in\\s+)?(${LANGUAGE_WORD_RE})(?![\\p{L}])`,
   "iu"
 );
 /** "Can you speak Spanish please?" / "…switch to Spanish" — a question that is really a request. */
-const REQUEST_CUE = /\b(please|switch|change|let'?s|i want you|i'?d like you|from now on)\b/i;
+const REQUEST_CUE =
+  /\b(please|switch|change|let'?s|i want you|i'?d like you|from now on|por favor|cambia|cambiemos|quiero que|desde ahora|per favore)\b/i;
 
 /**
  * "Do you speak Spanish?" / "Can you speak Yiddish?" → that language's code (asking, not asking to switch).
@@ -84,7 +115,10 @@ function languageCapabilityAsk(text) {
   const t = String(text || "").toLowerCase();
   const m = t.match(CAPABILITY_ASK);
   if (!m || REQUEST_CUE.test(t)) return null;
-  return LANGUAGE_WORDS[m[1]] || null;
+  const code = LANGUAGE_WORDS[m[1]] || null;
+  // "¿Tú hablas español?" asked in Spanish words: they're already speaking it — a switch, not an offer
+  if (code && /hablas|sabes|puedes|entiendes|parli|sai/.test(m[0]) && detectLanguage(t) === code) return null;
+  return code;
 }
 
 /** Answer to "Would you like me to switch?" */
@@ -97,27 +131,27 @@ function explicitLanguageSwitch(text) {
   if (TRANSLATION_ASK.test(t) || languageCapabilityAsk(t)) return null;
   const toLanguage = t.match(new RegExp(`\\b(?:switch|change)\\s+(?:it\\s+|over\\s+)?to\\s+(${LANGUAGE_WORD_RE})(?![\\p{L}])`, "iu"));
   if (toLanguage) return LANGUAGE_WORDS[toLanguage[1]];
-  const pairs = [
-    { re: /\b(speak|talk|reply|answer|switch)\s+(in\s+)?english\b|\bin\s+english\b|\benglish\s+please\b/, code: "en" },
-    { re: /\b(speak|talk|reply|answer|switch)\s+(in\s+)?spanish\b|\bin\s+spanish\b|\bespa[nñ]ol\b|\bhabla\s+espa/, code: "es" },
-    { re: /\b(speak|talk|reply|answer|switch)\s+(in\s+)?french\b|\bin\s+french\b|\bfran[cç]ais\b/, code: "fr" },
-    { re: /\b(speak|talk|reply|answer|switch)\s+(in\s+)?(hindi|urdu)\b|\bin\s+(hindi|urdu)\b/, code: "hi" },
-    { re: /\b(speak|talk|reply|answer|switch)\s+(in\s+)?(portuguese|portugu[eê]s)\b/, code: "pt" },
-    { re: /\b(speak|talk|reply|answer|switch)\s+(in\s+)?chinese\b|\bin\s+chinese\b/, code: "zh" },
-    {
-      re: /\b(speak|talk|reply|answer|switch|continue)\s+(in\s+)?yiddish\b|\bin\s+yiddish\b|\byiddish\s+please\b|\bspeak\s+yiddish\s+for\s+me\b/,
-      code: "yi",
-    },
-    {
-      re: /\b(speak|talk|reply|answer|switch|continue)\s+(in\s+)?hebrew\b|\bin\s+hebrew\b|\bhebrew\s+please\b/,
-      code: "he",
-    },
+  // One table for every language: "speak/reply in Italian", "in Italian", "Italian please",
+  // "podemos hablar en italiano", "respóndeme en inglés", "hacer un cambio a chino", "parliamo in italiano"
+  const asks = [
+    new RegExp(`\\b(?:speak|talk|reply|answer|respond|continue|switch)\\s+(?:to\\s+me\\s+)?(?:in\\s+|to\\s+)?(${LANGUAGE_WORD_RE})(?![\\p{L}])`, "iu"),
+    new RegExp(
+      `\\b(?:hablar|hablemos|h[aá]blame|hablarme|responde|responder|respondas|resp[oó]ndeme|contesta|contestar|contestes|` +
+        `cambiar|cambiemos|cambio|parliamo|parla|parlare|parlami|rispondi|rispondere)(?![\\p{L}])` +
+        `[^.?!]{0,30}?\\s(?:en\\s+|in\\s+|al?\\s+)?(${LANGUAGE_WORD_RE})(?![\\p{L}])`,
+      "iu"
+    ),
+    new RegExp(`\\bin\\s+(${LANGUAGE_WORD_RE})(?![\\p{L}])`, "iu"),
+    new RegExp(`\\b(${LANGUAGE_WORD_RE})\\s+please\\b`, "iu"),
   ];
-  for (const { re, code } of pairs) {
-    if (re.test(t)) return code;
+  for (const re of asks) {
+    const m = t.match(re);
+    if (m && LANGUAGE_WORDS[m[1]]) return LANGUAGE_WORDS[m[1]];
   }
-  // "¿Hablas español?" — the caller is already speaking Spanish
-  if (/\bhabla(?:s)?\s+espa[nñ]ol\b/.test(t)) return "es";
+  if (/\bspeak\s+yiddish\s+for\s+me\b/.test(t)) return "yi";
+  // "¿Hablas español?" / "español" / "français" — the caller is already speaking it
+  if (/\bespa[nñ]ol\b|\bhabla\s+espa/.test(t)) return "es";
+  if (/\bfran[cç]ais\b/.test(t)) return "fr";
   return null;
 }
 
@@ -165,11 +199,15 @@ function detectLanguage(text) {
   ) {
     return "pt";
   }
-  if (/\b(ciao|grazie|per favore|puoi|vorrei|buongiorno|buonasera|italiano|quale|miglior[ei]?|perch[eé])(?![\p{L}])/iu.test(t)) {
+  if (/\b(ciao|grazie|per favore|puoi|vorrei|buongiorno|buonasera|italiano|quale|miglior[ei]?|perch[eé]|parliamo|domanda)(?![\p{L}])/iu.test(t)) {
     return "it";
   }
   if (/\b(danke|bitte|guten (tag|morgen|abend)|sprechen sie|deutsch|ich (bin|habe|m[oö]chte))\b/i.test(t)) {
     return "de";
+  }
+  // Production 2026-10-30: a Swedish caller got English all call
+  if (/(?<![\p{L}])(hej|tjena|jag|inte|tack|vad|hur|svenska|är|och|nöjd|gör)(?![\p{L}])/iu.test(t) && /[åäö]|\b(hej|tjena|jag|tack)\b/i.test(t)) {
+    return "sv";
   }
   if (
     words >= 3 &&
@@ -270,7 +308,9 @@ function languageInstruction(session) {
   return (
     `Reply ONLY in ${name} for this call. ` +
     `Do not switch language unless the caller clearly asks to speak another language. ` +
-    `Ignore short noisy words (hello, ok, nah) as a reason to change language.`
+    `Ignore short noisy words (hello, ok, nah) as a reason to change language. ` +
+    // Production 2026-10-31: "No hablo italiano" / "debo responder únicamente en español"
+    `Never claim you can't speak a language or that you must stay in ${name}: you speak many languages.`
   );
 }
 

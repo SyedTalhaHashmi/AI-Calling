@@ -304,7 +304,18 @@ function extractWeatherPlaces(text) {
     if (cityChunk) break;
   }
 
-  const countryFromInline = normalizeCountryCode(inlineCountry) || countryHint;
+  // "Medellín, Colombia" — the city before the country (production 2026-10-31: read as the country,
+  // so its default city Bogotá was fetched). Only split when the tail is a country ("Winston-Salem" stays).
+  if (cityChunk && !inlineCountry) {
+    const tail = cityChunk.match(/^(.+?)\s*(?:,|\s-\s|-)\s*([a-zA-ZÀ-ÿ .']{2,40})$/);
+    if (tail && (normalizeCountryCode(tail[2]) || findCountryInText(tail[2])) && !normalizeCountryCode(tail[1])) {
+      cityChunk = tail[1].trim();
+      inlineCountry = tail[2].trim();
+    }
+  }
+
+  const countryFromInline =
+    normalizeCountryCode(inlineCountry) || findCountryInText(inlineCountry || "")?.code || countryHint;
 
   // Country-only ask: "weather in Puerto Rico"
   if (cityChunk) {

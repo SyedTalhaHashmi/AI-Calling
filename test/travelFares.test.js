@@ -74,6 +74,20 @@ const item = (dep, price, extra = {}) => ({
     assert.deepStrictEqual([r.match, r.price, r.departDate], ["exact", 410, "2026-11-02"]);
   });
 
+  await check("right departure but a different return → 'other_return', said plainly", async () => {
+    // Production 2026-10-29: "returning Sunday" was answered with a Friday return, labelled as their dates
+    byDeparture = { "2026-10": [item("2026-10-30", 112, { return_at: "2026-11-06T10:00:00-05:00", transfers: 0 })] };
+    const r = await createTravelService("tok", logger).fareForTrip("BOG", "MDE", { departDate: "2026-10-30", returnDate: "2026-11-01", oneWay: false });
+    assert.deepStrictEqual([r.match, r.returnDate, r.requestedReturn], ["other_return", "2026-11-06", "2026-11-01"]);
+    const f = formatFareFact(r);
+    assert.ok(/^I don't see fares returning Sunday, November 1\./.test(f), f);
+    assert.ok(/returning Friday, November 6/.test(f), f);
+    // Both days matching is still exact
+    byDeparture = { "2026-10": [item("2026-10-30", 140, { return_at: "2026-11-01T10:00:00-05:00" })] };
+    const ok = await createTravelService("tok", logger).fareForTrip("BOG", "MDE", { departDate: "2026-10-30", returnDate: "2026-11-01", oneWay: false });
+    assert.strictEqual(ok.match, "exact");
+  });
+
   await check("nothing on that date → nearby (within 3 days) is preferred and labelled 'near'", async () => {
     byDeparture = { "2026-11": [item("2026-11-20", 300), item("2026-11-04", 430)] };
     const r = await createTravelService("tok", logger).fareForTrip("BOG", "MIA", { departDate: "2026-11-02" });

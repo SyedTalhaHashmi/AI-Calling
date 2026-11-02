@@ -39,7 +39,9 @@ function isBillingQuestion(text) {
     /^[\s,]*(the|this|my)\s+(phone\s+)?(call|trial)[\s.?!]*$/i.test(t) ||
     /\blimit\b.*\b(with you|to talk|(on|for) (this|the|my) call)\b|\b(talk|call|time|trial) limit\b/i.test(t) ||
     /\bis there (a|any) (time |call |talk )?limit[\s.?!]*$/i.test(t) ||
-    /^[\s,]*(and|so|but|oh)?[\s,]*(it['’]?s|it is|this is|is this|is it|that['’]?s)\s+(really\s+|totally\s+|completely\s+)?free\b/i.test(t)
+    /^[\s,]*(and|so|but|oh)?[\s,]*(it['’]?s|it is|this is|is this|is it|that['’]?s)\s+(really\s+|totally\s+|completely\s+)?free\b/i.test(t) ||
+    // "Are you free?" said on its own (production 2026-10-30) — about this service, not "free tonight"
+    /^[\s,]*(and|so|but|oh|hi|hey|hello)?[\s,]*(are you|is buddy)\s+(really\s+|totally\s+)?free[\s.?!]*$/i.test(t)
   ) {
     return true;
   }
@@ -112,7 +114,7 @@ function billingReply(session, text = "") {
 
   if (mode === "trial" && max != null && max > 0) {
     return (
-      `This free trial call lasts ${formatSecondsFriendly(max)}. ` +
+      `This free trial call lasts ${formatSecondsFriendly(max)}, and you're never charged for it. ` +
       `To keep talking after that, subscribe or add minutes at buddycallai dot com.`
     );
   }
@@ -153,7 +155,8 @@ function billingTurnNote(session) {
   const mode = session?.billingMode || "legacy";
   const max = Math.floor(Number(session?.maxBillableSeconds) || 0);
   if (mode === "trial" && max > 0) {
-    return ` This call is a free trial that lasts ${max} seconds. If asked about cost, free time, or limits, say exactly that; never say it is free with no limit or unlimited.`;
+    // Production 2026-10-30: "After that, normal charges may apply" — trial calls are never charged
+    return ` This call is a free trial that lasts ${max} seconds and is never charged; when the time is up, the call simply ends. If asked about cost, free time, or limits, say exactly that; never say it is free with no limit or unlimited, and never say charges may apply.`;
   }
   if (mode === "subscriber" && max > 0) {
     return ` The caller has about ${max} seconds left on their plan. If asked about time or cost, say that; never say it is free or unlimited.`;
@@ -174,7 +177,7 @@ function sessionBillingFacts(session) {
   const max = session?.maxBillableSeconds;
   if (mode === "trial" && max != null && max > 0) {
     return (
-      `Billing facts (authoritative): this is a trial call capped at ${Math.floor(max)} seconds. ` +
+      `Billing facts (authoritative): this is a trial call capped at ${Math.floor(max)} seconds; it is never charged, and it simply ends when the time is up. ` +
       `If asked about free time, length, cost, or minutes, say that clearly and mention buddycallai.com to subscribe. ` +
       `Never say unlimited, forever free, or no charge for unlimited talking.`
     );

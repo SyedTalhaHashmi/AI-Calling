@@ -226,7 +226,8 @@ function isTravelPriceQuestion(text) {
     /\b(precio(s)?\s+del?\s+(vuelo|tiquete|boleto|pasaje)|cu[aá]nto\s+cuesta\s+un?\s+(tiquete|boleto|pasaje|vuelo))\b/i.test(
       t
     ) ||
-    /\b(viajar|viaje)\s+de\s+.+\s+a\s+.+\b/i.test(t) ||
+    // "viajar desde Medellín a Bogotá" (production 2026-10-31: only "de" was matched, so a model guessed the price)
+    /\b(viajar|viaje|volar|vuelo)\s+(de|desde)\s+.+\s+(a|para|hacia)\s+.+\b/i.test(t) ||
     /\b(tiquete|boleto|pasaje)(s)?\b/i.test(t) ||
     /\b(buy|book|get)\s+(a\s+)?(plane\s+)?ticket/i.test(t) ||
     /\bticket(s)?\s+(to|from|for)\b/i.test(t) ||
@@ -238,6 +239,12 @@ function isTravelPriceQuestion(text) {
     /\b(airline|plane|flight)\s+tickets?\b/i.test(t)
   ) {
     return true;
+  }
+  // Spanish: two cities with a travel or price word ("el precio desde Medellín a Bogotá"); a single
+  // city stays out ("el precio del metro de Medellín" is not a flight)
+  if (/\b(viajar|viaje|volar|vuelo|precio|tiquete|pasaje)\b/i.test(t)) {
+    const route = extractRouteParts(t);
+    if ([route.from, route.to, ...route.others].filter(Boolean).length >= 2) return true;
   }
   if (/\b(travel|travelling|traveling|trip|fly|flight)\b/i.test(t)) {
     const route = extractRouteParts(t);
@@ -310,6 +317,11 @@ function isSportsQuestion(text) {
   const t = text || "";
   // The sports lookup only has live scores; "when is the next match" is a schedule question
   if (/\b(next|upcoming|schedule|when is|when does|when do)\b/i.test(t)) return false;
+  // General knowledge, not scores (production 2026-10-30: "the rules of soccer" fetched live scores)
+  if (/\b(rules?|history|how (?:do|does|to|you) (?:you )?play|explain|what is|what's|goat|greatest|best player|who invented)\b/i.test(t) &&
+      !/\b(scores?|who won|result|results|tonight|today|yesterday|last night|live)\b/i.test(t)) {
+    return false;
+  }
   const keywords = [
     "score",
     "scores",
@@ -520,6 +532,10 @@ function extractCityAndCountry(text, placeHint) {
   }
 
   if (hintCountry) {
+    // "Will it rain today?" after Medellín's weather is Medellín, not the country's default city
+    if (placeHint?.city && normalizeCountryCode(placeHint.country) === hintCountry) {
+      return [{ city: placeHint.city, country: hintCountry }];
+    }
     const def = defaultCityForCountry(hintCountry);
     if (def) return [{ city: def, country: hintCountry }];
   }
@@ -543,6 +559,20 @@ function extractNewsQuery(text) {
   m = t.match(/\bbreaking\s+(?:news\s+)?(?:from|in)\s+([a-zA-ZÀ-ÿ\s]+?)(?:\?|\.|$)/i);
   if (m) return m[1].trim();
   return extractTopic(t);
+}
+
+/**
+ * "Will it rain today?" / "forecast for tomorrow" / "¿va a llover mañana?" → which day's forecast
+ * to say with the current weather ("today" | "tomorrow"), or null for a plain weather ask.
+ */
+function weatherForecastDay(text) {
+  const t = String(text || "").toLowerCase();
+  const asksAhead =
+    /\b(rain|raining|rainy|snow|snowing|storm|umbrella|forecast|later|tonight|this afternoon|this evening|high|low)\b/.test(t) ||
+    /\b(llover|llueve|lluvia|lloviendo|pron[oó]stico|paraguas|tormenta|nevar)\b/.test(t);
+  // "por la mañana" / "en la mañana" is the morning, not tomorrow
+  if (/\btomorrow\b/.test(t) || /(?<!\bla )\bma[nñ]ana(?![\p{L}])/u.test(t)) return "tomorrow";
+  return asksAhead ? "today" : null;
 }
 
 function extractFlightNumber(text) {
@@ -575,6 +605,7 @@ module.exports = {
   isHotelPriceQuestion,
   mentionsFlights,
   hotelTier,
+  weatherForecastDay,
   isLocalServiceQuestion,
   extractTravelRoute,
   extractRouteIata,

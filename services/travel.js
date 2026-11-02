@@ -136,6 +136,7 @@ function createTravelService(token, logger) {
       oneWay: isOneWay,
       match,
       requestedDate: departDate || null,
+      requestedReturn: back,
       month: month || null,
     });
 
@@ -154,9 +155,20 @@ function createTravelService(token, logger) {
       }
       let found = null;
       if (departDate) {
+        // Exact only when the return day matches too (production 2026-10-29: "returning Sunday"
+        // was answered with a Friday return, labelled as their dates)
+        const sameTrip = items.find((it) => day(it.departure_at) === departDate && (!back || day(it.return_at) === back));
         const sameDay = items.find((it) => day(it.departure_at) === departDate);
         const near = items.find((it) => daysApart(day(it.departure_at), departDate) <= 3);
-        found = sameDay ? pack(sameDay, "exact") : near ? pack(near, "near") : items[0] ? pack(items[0], "other_dates") : null;
+        found = sameTrip
+          ? pack(sameTrip, "exact")
+          : sameDay
+            ? pack(sameDay, "other_return")
+            : near
+              ? pack(near, "near")
+              : items[0]
+                ? pack(items[0], "other_dates")
+                : null;
       } else if (window) {
         const inWeek = items.find((it) => day(it.departure_at) >= window.start && day(it.departure_at) <= window.end);
         found = inWeek ? pack(inWeek, "window") : items[0] ? pack(items[0], "other_dates") : null;

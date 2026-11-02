@@ -368,4 +368,61 @@ check("session billing facts include the plan list for follow-ups", () => {
   }
 });
 
+check("Spanish and Italian requests to switch language switch (production 2026-10-29/31)", () => {
+  const cases = [
+    ["No, eh, ¿podemos hablar en italiano ahora, por favor?", "it"],
+    ["Necesito, necesito que me respondas ahora en italiano, por favor.", "it"],
+    ["No, no, vamos a hacer, vamos a hacer un cambio en italiano, por favor.", "it"],
+    ["No, vamos a cambiar y ahora vamos a hablar en italiano.", "it"],
+    ["No, no, parliamo, no parliamo in italiano.", "it"],
+    ["Háblame en inglés, por favor.", "en"],
+    ["Ok, cambiemos a francés.", "fr"],
+    ["Can you reply in Italian?", "it"],
+    ["Korean please", "ko"],
+  ];
+  for (const [t, code] of cases) assert.strictEqual(explicitLanguageSwitch(t), code, t);
+  const s = { replyLanguage: "es" };
+  assert.deepStrictEqual(updateReplyLanguage(s, cases[0][0]), { changed: true, language: "it" });
+});
+
+check("Spanish 'do you speak…?' offers the language; asked in the same language it switches", () => {
+  for (const [t, code] of [["Ok, otra pregunta, ¿tú hablas italiano?", "it"], ["¿Hablas chino?", "zh"], ["¿Sabes hablar alemán?", "de"]]) {
+    const s = { replyLanguage: "es" };
+    const r = updateReplyLanguage(s, t);
+    assert.deepStrictEqual([r.offer, r.changed, s.replyLanguage], [code, false, "es"], t);
+  }
+  // Still a switch, as before: the caller is already speaking Spanish
+  const s = { replyLanguage: "en" };
+  assert.strictEqual(updateReplyLanguage(s, "Hola, buenas tardes. ¿Tú hablas español?").language, "es");
+});
+
+check("Spanish translation asks are not switches", () => {
+  for (const t of ["¿Cómo se dice gracias en italiano?", "¿Me puedes traducir esto al chino?", "Come si dice grazie in inglese?"]) {
+    assert.strictEqual(explicitLanguageSwitch(t), null, t);
+  }
+});
+
+check("Swedish is detected; English and Spanish are not mistaken for it", () => {
+  // Production 2026-10-30: a Swedish caller got English all call
+  assert.strictEqual(detectLanguage("Tjena Krister! Ja, jag undrar, vad fan gör du där? Hej!"), "sv");
+  assert.strictEqual(detectLanguage("Är du nöjd?"), "sv");
+  assert.strictEqual(detectLanguage("What would you like to talk about?"), "en");
+  assert.strictEqual(detectLanguage("¿Qué me recomiendas para comer?"), "es");
+});
+
+check("language rule: never claim it can't speak a language", () => {
+  const { languageInstruction } = require("../utils/replyLanguage");
+  assert.ok(/Never claim you can't speak a language/.test(languageInstruction({ replyLanguage: "es" })));
+});
+
+check("trial calls: 'Are you free?' is a billing question and the answer says it's never charged", () => {
+  // Production 2026-10-30: "This call is a free trial lasting 60 seconds. After that, normal charges may apply."
+  assert.ok(isBillingQuestion("Are you free?"));
+  assert.ok(!isBillingQuestion("Are you free tonight to talk about my trip?"));
+  const trial = { billingMode: "trial", maxBillableSeconds: 60 };
+  assert.ok(/never charged/.test(billingReply(trial, "Are you free?")));
+  assert.ok(/never charged/.test(billingTurnNote(trial)) && /never say charges may apply/.test(billingTurnNote(trial)));
+  assert.ok(/never charged/.test(billingInstruction(trial)));
+});
+
 if (!process.exitCode) console.log(`\nAll ${passed} checks passed`);

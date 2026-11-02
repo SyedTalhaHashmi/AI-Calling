@@ -307,6 +307,52 @@ check("a trip ask that mentions flights is recognised next to hotels", () => {
   assert.strictEqual(mentionsFlights("best hotels in Miami"), false);
 });
 
+check("weather 'City, Country' keeps the city (production: 'Medellín, Colombia' fetched Bogotá)", () => {
+  assert.deepStrictEqual(extractCityAndCountry("Do you mind if you give me the weather in Medellín, Colombia?"), [
+    { city: "Medellín", country: "CO" },
+  ]);
+  assert.deepStrictEqual(extractCityAndCountry("¿Cuál es el clima de Bogotá-Colombia hoy?"), [{ city: "Bogotá", country: "CO" }]);
+  // A country alone still uses its main city; a hyphenated city is not split
+  assert.deepStrictEqual(extractCityAndCountry("What's the weather in Colombia?"), [{ city: "Bogota", country: "CO" }]);
+  assert.strictEqual(extractCityAndCountry("weather in Winston-Salem")[0].city, "Winston-Salem");
+});
+
+check("weather follow-up without a city uses the last city asked about, not the country's default", () => {
+  const hint = { country: "CO", city: "Medellín" };
+  assert.deepStrictEqual(extractCityAndCountry("Do you think it's going to rain today?", hint), [{ city: "Medellín", country: "CO" }]);
+  assert.deepStrictEqual(extractCityAndCountry("Do you think it's going to rain today?", { country: "CO" }), [
+    { city: "Bogota", country: "CO" },
+  ]);
+});
+
+check("rain / forecast questions ask for a forecast day", () => {
+  const { weatherForecastDay } = require("../utils/intentRouter");
+  assert.strictEqual(weatherForecastDay("Do you think it's going to rain today?"), "today");
+  assert.strictEqual(weatherForecastDay("What's the forecast for tomorrow in Miami?"), "tomorrow");
+  assert.strictEqual(weatherForecastDay("¿Va a llover mañana en Bogotá?"), "tomorrow");
+  assert.strictEqual(weatherForecastDay("¿Va a llover por la mañana?"), "today");
+  assert.strictEqual(weatherForecastDay("What's the weather in Miami?"), null);
+});
+
+check("general sports knowledge is chat; scores are sports (production: soccer rules fetched live scores)", () => {
+  assert.strictEqual(
+    resolveIntent("I would like if you could tell me something about the sport of soccer, the rules and what it's all about."),
+    "chat"
+  );
+  assert.strictEqual(resolveIntent("Who is the GOAT of football?"), "chat");
+  assert.strictEqual(resolveIntent("What's the football score today?"), "sports");
+  assert.strictEqual(resolveIntent("Who won the NBA game last night?"), "sports");
+});
+
+check("Spanish 'viajar desde X a Y' is a fare question; a city's metro price is not", () => {
+  // Production 2026-10-31: answered with a guessed price
+  const t = "ok perfecto una última pregunta debo viajar desde desde medellín a bogotá mañana una sola vía me puedes dar más o menos un precio de etiquete";
+  assert.strictEqual(resolveIntent(t), "travel_price");
+  assert.deepStrictEqual(extractTravelRoute(t), { origin: "MDE", destination: "BOG" });
+  assert.strictEqual(resolveIntent("No te escuché lo del precio desde Medellín a Bogotá."), "travel_price");
+  assert.notStrictEqual(resolveIntent("¿Cuál es el precio del metro de Medellín?"), "travel_price");
+});
+
 if (process.exitCode) {
   console.log(`\nFAILED — ${passed} checks passed before failure`);
 } else {

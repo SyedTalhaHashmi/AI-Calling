@@ -24,8 +24,10 @@ const toFahrenheit = (c) => Math.round((Number(c) * 9) / 5 + 32);
 /**
  * "81 degrees Fahrenheit and clear sky in Miami, Florida, humidity 80%".
  * Callers on a +1 number also hear Fahrenheit for foreign cities.
+ * forecast "today" | "tomorrow" adds that day's high, low, and rain chance (production 2026-10-31:
+ * "will it rain today?" got an invented forecast — the rain chance was fetched but never said).
  */
-function formatWeatherFact(result, { callerNumber } = {}) {
+function formatWeatherFact(result, { callerNumber, forecast } = {}) {
   if (result.error) return result.error;
   const country = String(result.country || "").toUpperCase();
   const usesF = FAHRENHEIT_COUNTRIES.has(country);
@@ -40,7 +42,16 @@ function formatWeatherFact(result, { callerNumber } = {}) {
     temp = `${result.temp} degrees Celsius`;
   }
   const humidity = result.humidity != null ? `, humidity ${result.humidity}%` : "";
-  return `${temp} and ${result.description} in ${where}${humidity}`;
+  const day = forecast && result[forecast];
+  let ahead = "";
+  if (day && day.high != null && day.low != null) {
+    const deg = (c) => (usesF ? toFahrenheit(c) : Math.round(Number(c)));
+    const rain = day.rainChance != null ? `, with a ${day.rainChance}% chance of rain` : "";
+    ahead =
+      `. ${forecast === "tomorrow" ? "Tomorrow" : "Today"}: ${day.description ? `${day.description}, ` : ""}` +
+      `high ${deg(day.high)}, low ${deg(day.low)} degrees ${usesF ? "Fahrenheit" : "Celsius"}${rain}`;
+  }
+  return `${temp} and ${result.description} in ${where}${humidity}${ahead}`;
 }
 
 /** Spoken city name for an IATA city/airport code from the router's table ("BOG" → "Bogotá"). */
@@ -138,6 +149,11 @@ function formatFareFact(result) {
     case "exact":
     case "window":
       return `The cheapest fare I can see ${route}, ${dates}, is ${details}.${tail}`;
+    case "other_return":
+      return (
+        `I don't see fares returning ${spokenDate(result.requestedReturn)}. ` +
+        `The cheapest I can see ${route}, ${dates}, is ${details}.${tail}`
+      );
     case "near":
       return `I don't see fares for ${spokenDate(result.requestedDate)}, but close to it, ${dates}, ${route} is ${details}.${tail}`;
     case "other_dates":

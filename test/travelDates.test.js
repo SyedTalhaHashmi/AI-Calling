@@ -107,4 +107,10 @@ check("stay nights from words or dates; month names", () => {
   assert.strictEqual(monthName("2026-12"), "December");
 });
 
+check("'una sola vía' (Colombian Spanish) is one-way; 'regresando el domingo' is the return day", () => {
+  assert.strictEqual(parseTravelDates("de Medellín a Bogotá mañana una sola vía", NOW).oneWay, true);
+  const r = parseTravelDates("me voy mañana para medellín saliendo en la mañana regresando el domingo", NOW);
+  assert.deepStrictEqual([r.departDate, r.returnDate, r.oneWay], ["2026-10-30", "2026-11-01", false]);
+});
+
 if (!process.exitCode) console.log(`\nAll ${passed} checks passed`);

@@ -50,6 +50,23 @@ check("a caller from a +1 number also hears Fahrenheit for foreign cities", () =
   assert.ok(!/Fahrenheit/.test(formatWeatherFact(bogota, { callerNumber: "+573001234567" })));
 });
 
+check("rain question: today's forecast with the rain chance is in the fact (production: guessed)", () => {
+  const withDays = {
+    ...bogota,
+    today: { high: 20, low: 11, rainChance: 84, description: "drizzle" },
+    tomorrow: { high: 22, low: 12, rainChance: 49, description: "overcast" },
+  };
+  const today = formatWeatherFact(withDays, { forecast: "today" });
+  assert.ok(/Today: drizzle, high 20, low 11 degrees Celsius, with a 84% chance of rain/.test(today), today);
+  const tomorrow = formatWeatherFact(withDays, { forecast: "tomorrow" });
+  assert.ok(/Tomorrow: overcast, high 22, low 12/.test(tomorrow) && /49% chance of rain/.test(tomorrow), tomorrow);
+  // U.S. forecast in Fahrenheit; no forecast asked → unchanged; no forecast data → unchanged
+  const mia = formatWeatherFact({ ...miami, today: { high: 30, low: 24, rainChance: 10 } }, { forecast: "today" });
+  assert.ok(/high 86, low 75 degrees Fahrenheit/.test(mia), mia);
+  assert.ok(!/Today/.test(formatWeatherFact(withDays)));
+  assert.ok(!/Today/.test(formatWeatherFact(bogota, { forecast: "today" })));
+});
+
 check("weather errors pass through unchanged", () => {
   assert.strictEqual(formatWeatherFact({ error: "Could not fetch weather." }), "Could not fetch weather.");
 });

@@ -1,11 +1,17 @@
 /**
- * Fixed answers about the assistant itself: its name (Buddy) and who created it.
+ * Fixed answers about the assistant itself: its name (Buddy), who created it, and what the
+ * service does (recording, texting) — production 2026-10-30, the model said calls are recorded
+ * and that Buddy can text.
  */
 
 const NAME_REPLY = "I'm Buddy, your AI friend.";
 const CREATOR_REPLY = "I was created by Brash3D Media Group.";
 const NAME_AND_CREATOR_REPLY = "I'm Buddy, and I was created by Brash3D Media Group.";
 const MODEL_REPLY = "I'm Buddy, built by Brash3D Media Group.";
+const RECORDING_REPLY =
+  "No, this call isn't recorded. If you have a BuddyCallAI account, we email a text transcript of our conversation to your registered email.";
+const TEXTING_REPLY =
+  "I'm voice only for now, so there's no texting or text chat. You can call me anytime.";
 
 const MADE_VERBS = "made|created|built|developed|designed|programmed|trained";
 
@@ -47,9 +53,32 @@ function isModelQuestion(t) {
   );
 }
 
-/** The fixed reply when the caller asks Buddy's name, creator, or underlying model; otherwise null. */
+/** "Is this thing recorded?" / "Are you recording me?" / "¿Se está grabando?" */
+function isRecordingQuestion(t) {
+  return (
+    /\b(?:is|was)\s+(?:this|it|that)(?:\s+(?:thing|call|conversation|chat|line))?\s+(?:being\s+)?recorded\b/.test(t) ||
+    /\b(?:is|are)\s+(?:the|our|my|these)\s+(?:call|calls|conversation|conversations|chat|chats)\s+(?:being\s+)?recorded\b/.test(t) ||
+    /\b(?:do|are|will|did)\s+you\s+(?:record|recording|save|store|keep)\b.*\b(?:call|calls|me|this|conversation|voice|audio)\b/.test(t) ||
+    /\bare\s+you\s+recording\b/.test(t) ||
+    /\b(?:se\s+)?(?:est[aá]s?\s+)?grab(?:a|ando|ada|ado|an)\b/.test(t)
+  );
+}
+
+/** "Do you text?" / "Can I text you?" / "Are the texts free?" — not "text me the link" (the model gives a site). */
+function isTextingQuestion(t) {
+  return (
+    /^[\s,]*(?:so|and|but|ok|okay)?[\s,]*(?:do|can|could)\s+(?:you|i|we)\s+(?:also\s+)?(?:text|sms|message)(?:\s+(?:you|me|with you|each other))?[\s.?!]*$/.test(t) ||
+    /\btext\s+chat\b|\bchat\s+by\s+text\b|\btexting\b/.test(t) ||
+    /\b(?:are|is)\s+(?:the\s+)?(?:texts?|text messages|messages)\s+free\b/.test(t) ||
+    /\bmensajes?\s+de\s+texto\b/.test(t)
+  );
+}
+
+/** The fixed reply when the caller asks Buddy's name, creator, model, or about recording or texting; otherwise null. */
 function identityReply(text) {
   const t = String(text || "").toLowerCase().replace(/[’]/g, "'");
+  if (isRecordingQuestion(t)) return RECORDING_REPLY;
+  if (isTextingQuestion(t)) return TEXTING_REPLY;
   if (isModelQuestion(t)) return MODEL_REPLY;
   const name = isNameQuestion(t);
   const creator = isCreatorQuestion(t);

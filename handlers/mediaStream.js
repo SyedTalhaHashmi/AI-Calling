@@ -21,6 +21,7 @@ const {
   isHotelPriceQuestion,
   mentionsFlights,
   hotelTier,
+  weatherForecastDay,
 } = require("../utils/intentRouter");
 const {
   formatWeatherFact,
@@ -86,10 +87,17 @@ function buildRealtimeInstructions(session, { toolsMode = false, webSearch = fal
   return parts.join("\n");
 }
 
+/**
+ * Caller speech → text for the router. gpt-transcribe: whisper-1 is removed from the API on
+ * 2027-02-26, and on phone-quality test audio gpt-transcribe was more accurate (names, Spanish,
+ * Chinese). REALTIME_TRANSCRIBE_MODEL switches it (e.g. back to whisper-1) without a code change.
+ */
+const TRANSCRIBE_MODEL = process.env.REALTIME_TRANSCRIBE_MODEL || "gpt-transcribe";
+
 /** Realtime input: denoise, then semantic turn detection (ChatGPT-like; waits on fillers / incomplete thoughts). */
 const REALTIME_INPUT_AUDIO = {
   noise_reduction: { type: "far_field" },
-  transcription: { model: "whisper-1" },
+  transcription: { model: TRANSCRIBE_MODEL },
   turn_detection: {
     type: "semantic_vad",
     eagerness: "medium",
@@ -97,6 +105,28 @@ const REALTIME_INPUT_AUDIO = {
     create_response: false,
   },
 };
+
+const echoWords = (s) =>
+  String(s || "")
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/\p{M}/gu, "")
+    .replace(/[^\p{L}\p{N}\s]/gu, " ")
+    .split(/\s+/)
+    .filter(Boolean);
+
+/**
+ * The caller's phone playing Buddy back (speakerphone): production 2026-10-30 transcribed the greeting
+ * as "Hi, I'm Bunny, your AI..." and Buddy answered itself. Four or more words, nearly all from
+ * what Buddy just said.
+ */
+function isEchoOfReply(text, reply) {
+  const said = echoWords(text);
+  if (said.length < 4) return false;
+  const heard = new Set(echoWords(reply));
+  return said.filter((w) => heard.has(w)).length / said.length >= 0.75;
+}
+const ECHO_WINDOW_MS = 8000;
 
 function responseIdFromEvent(ev) {
   return ev?.response?.id || ev?.response_id || null;
@@ -186,10 +216,22 @@ const WEATHER_TOOL = {
   },
 };
 
-const TIME_UP_INSTRUCTION =
-  "Say exactly: Your time for this call is up. To keep talking, subscribe or add minutes at buddycallai dot com. Goodbye.";
-const timeWarningInstruction = (seconds) =>
-  `Say exactly: Quick heads-up, there are about ${seconds} seconds left on this call.`;
+const TIME_UP_TEXT =
+  "Your time for this call is up. To keep talking, subscribe or add minutes at buddycallai dot com. Goodbye.";
+/** Word for word in English; in the call's language otherwise (production: English heads-up on a Mandarin call). */
+const sayInCallLanguage = (text, langName) =>
+  langName === "English"
+    ? `Say exactly this and nothing else: ${text}`
+    : `Say this in ${langName} and nothing else, keeping its meaning, numbers, and the website: ${text}`;
+const timeUpInstruction = (langName) => sayInCallLanguage(TIME_UP_TEXT, langName);
+const timeWarningInstruction = (seconds, langName) =>
+  sayInCallLanguage(`Quick heads-up, there are about ${seconds} seconds left on this call.`, langName);
+/**
+ * Time messages are answered out of band — no conversation context, only the sentence. Production
+ * 2026-11-01: the time-up message, sent while the caller was talking, came out as "Sure, I'm
+ * checking the time now. Just a moment." (the model answered the caller's audio instead).
+ */
+const OUT_OF_BAND = { conversation: "none", input: [] };
 
 /**
  * Fast-path replies are the whole answer. In a production call the model said "Let me find the
@@ -265,6 +307,8 @@ function createMediaStreamHandler({
     let openaiWs = null;
     let transcriptLines = [];
     let lastUserTranscript = "";
+    /** Buddy's last spoken reply and when it finished — for the echo check. */
+    let lastAiReply = { text: "", at: 0 };
     let responseInProgress = false;
     /** OpenAI response id currently allowed to send outbound audio to Twilio. */
     let activeResponseId = null;
@@ -456,7 +500,14 @@ function createMediaStreamHandler({
                 openaiWs.send(
                   JSON.stringify(
                     createResponsePayload(
-                      { instructions: timeWarningInstruction(maxSec - elapsed), tools: [] },
+                      {
+                        ...OUT_OF_BAND,
+                        instructions: timeWarningInstruction(
+                          maxSec - elapsed,
+                          languageLabel(callStore.get(callSid)?.replyLanguage || "en")
+                        ),
+                        tools: [],
+                      },
                       metrics.beginSystemTurn("time_warning")
                     )
                   )
@@ -479,7 +530,8 @@ function createMediaStreamHandler({
                     JSON.stringify(
                       createResponsePayload(
                         {
-                          instructions: TIME_UP_INSTRUCTION,
+                          ...OUT_OF_BAND,
+                          instructions: timeUpInstruction(languageLabel(billRef?.replyLanguage || "en")),
                           tools: [],
                         },
                         metrics.beginSystemTurn("time_up")
@@ -632,6 +684,11 @@ function createMediaStreamHandler({
             }
             const userLog = trimmed.length > 100 ? trimmed.slice(0, 100) + "…" : trimmed;
             logger.info({ callSid, transcript: trimmed, role: "user" }, `USER: ${userLog}`);
+            if (Date.now() - lastAiReply.at < ECHO_WINDOW_MS && isEchoOfReply(trimmed, lastAiReply.text)) {
+              logger.info({ callSid, transcript: trimmed }, "Skip turn: echo of Buddy's own reply");
+              metrics.finishWithoutReply(turnId, "echo");
+              return;
+            }
             if (trimmed === lastUserTranscript) {
               metrics.finishWithoutReply(turnId, "duplicate");
               return;
@@ -804,8 +861,15 @@ function createMediaStreamHandler({
                     )
                   );
                   const facts = [];
+                  // A rain / forecast question also gets today's (or tomorrow's) forecast
+                  const forecast = weatherForecastDay(trimmed);
+                  // Follow-ups without a city ("will it rain?") stay on the one city just asked about
+                  const only = places.length === 1 && results[0] && !results[0].error ? results[0] : null;
+                  if (only && sessionRef) {
+                    sessionRef.placeHint = { ...(sessionRef.placeHint || {}), country: only.country || places[0].country, city: places[0].city };
+                  }
                   places.forEach((place, i) => {
-                    facts.push(formatWeatherFact(results[i], { callerNumber: sessionRef?.callerNumber }));
+                    facts.push(formatWeatherFact(results[i], { callerNumber: sessionRef?.callerNumber, forecast }));
                     logger.info(
                       { callSid, city: place.city, country: place.country, result: results[i] },
                       "Weather fast path"
@@ -821,7 +885,8 @@ function createMediaStreamHandler({
                         f
                       )
                   );
-                  sendReply(fact, { multilingual: !hadError });
+                  // A forecast adds a sentence; 20 words would drop the rain chance
+                  sendReply(fact, { multilingual: !hadError, maxWords: forecast && !hadError ? 40 : undefined });
                 } catch (err) {
                   logger.error({ callSid, err: err.message }, "Weather fast path failed");
                   sendReply("I couldn't get the weather right now.", { multilingual: false });
@@ -1275,6 +1340,7 @@ function createMediaStreamHandler({
 
           if (ev.type === "response.output_audio_transcript.done" && ev.transcript) {
             transcriptLines.push(`AI: ${ev.transcript}`);
+            lastAiReply = { text: ev.transcript, at: Date.now() };
             callStore.addAssistantMessage(callSid, ev.transcript);
             const aiLog = ev.transcript.length > 100 ? ev.transcript.slice(0, 100) + "…" : ev.transcript;
             logger.info({ callSid, reply: ev.transcript, role: "assistant" }, `AI: ${aiLog}`);

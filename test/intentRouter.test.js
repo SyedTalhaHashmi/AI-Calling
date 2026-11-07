@@ -353,6 +353,44 @@ check("Spanish 'viajar desde X a Y' is a fare question; a city's metro price is 
   assert.notStrictEqual(resolveIntent("¿Cuál es el precio del metro de Medellín?"), "travel_price");
 });
 
+check("Italian and Portuguese weather questions look up the city (live replay: Rome weather was invented)", () => {
+  assert.strictEqual(resolveIntent("Che tempo fa a Roma oggi?"), "weather");
+  // Local names become the English name + country (the geocoder returned Romania for "Roma")
+  assert.deepStrictEqual(extractCityAndCountry("Che tempo fa a Roma oggi?"), [{ city: "Rome", country: "IT" }]);
+  assert.deepStrictEqual(extractCityAndCountry("Com'è il meteo a Milano?"), [{ city: "Milan", country: "IT" }]);
+  assert.strictEqual(resolveIntent("Vai chover em São Paulo amanhã?"), "weather");
+  assert.strictEqual(extractCityAndCountry("Vai chover em São Paulo amanhã?")[0].city, "São Paulo");
+  // "tempo" alone is also "time / how long"
+  assert.strictEqual(resolveIntent("Quanto tempo dura il volo?"), "chat");
+});
+
+check("'How many pesos is one dollar?' is an exchange-rate question with both currencies", () => {
+  const fx = require("../services/fx")(true, { info() {}, warn() {}, error() {} });
+  for (const t of ["How many Colombian pesos is one U.S. dollar today?", "¿Cuántos pesos es un dólar hoy?", "How many pesos is a dollar?"]) {
+    assert.strictEqual(resolveIntent(t), "fx", t);
+    assert.deepStrictEqual(fx.parsePairFromUtterance(t), { base: "USD", quote: "COP" }, t);
+  }
+  assert.deepStrictEqual(fx.parsePairFromUtterance("How many people live in Miami?"), { base: null, quote: null });
+});
+
+check("exchange rates are said as people say them (live replay: '3176.9100 COP')", () => {
+  const { spokenRate, roundRate } = require("../services/fx");
+  assert.strictEqual(spokenRate({ base: "USD", quote: "COP", rate: 3176.91 }), "One US dollar is about 3,177 Colombian pesos.");
+  assert.strictEqual(spokenRate({ base: "EUR", quote: "USD", rate: 1.08734 }), "One euro is about 1.09 US dollars.");
+  assert.strictEqual(roundRate(0.000314812), 0.0003148);
+});
+
+check("geocoder: a country or region entry is never taken as the city", () => {
+  const { pickGeoResult } = require("../utils/placeResolve");
+  const results = [
+    { name: "Romania", country_code: "RO", population: 19020271, feature_code: "PCLI" },
+    { name: "Roma", country_code: "RO", population: 3218, feature_code: "PPLA2" },
+  ];
+  assert.strictEqual(pickGeoResult(results).name, "Roma");
+  // A country-only list still returns something
+  assert.strictEqual(pickGeoResult([results[0]]).name, "Romania");
+});
+
 if (process.exitCode) {
   console.log(`\nFAILED — ${passed} checks passed before failure`);
 } else {

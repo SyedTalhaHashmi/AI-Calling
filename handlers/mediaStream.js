@@ -1,10 +1,13 @@
 /**
  * Twilio Media Stream WebSocket handler.
- * Bridges Twilio (μ-law 8kHz) ↔ OpenAI Realtime API (PCM 24kHz).
+ * Bridges Twilio (μ-law 8kHz) ↔ OpenAI Realtime API — μ-law passed straight through by default
+ * (REALTIME_AUDIO_FORMAT=pcm24 converts to/from PCM 24kHz as before).
  */
 const WebSocket = require("ws");
 const { twilioToOpenAI, openAIToTwilio } = require("../services/audioConvert");
 const { SYSTEM_PROMPT } = require("../utils/callStore");
+const { emptyUsage, addResponseUsage, estimateCost } = require("../utils/realtimeCost");
+const { spokenRate } = require("../services/fx");
 const {
   findCountryInText,
   normalizeCountryCode,
@@ -40,7 +43,6 @@ const {
 } = require("../utils/replyLanguage");
 const {
   isBillingQuestion,
-  isPlanCatalogQuestion,
   billingReply,
   billingInstruction,
   billingTurnNote,
@@ -65,14 +67,28 @@ const {
   toolChoiceAgreement,
 } = require("./realtimeTools");
 
-const OPENAI_REALTIME_URL = "wss://api.openai.com/v1/realtime?model=gpt-realtime";
+/** Defaults for the OpenAI Realtime session; config.realtime (from .env) overrides each one. */
+const REALTIME_DEFAULTS = {
+  model: "gpt-realtime",
+  /** Reasoning models only (gpt-realtime-2.x): minimal | low | medium | high. null = not sent. */
+  reasoningEffort: null,
+  voice: "marin",
+  /** "pcmu": Twilio μ-law passed straight through; "pcm24": converted to/from PCM 24 kHz. */
+  audioFormat: "pcmu",
+  transcribeModel: "gpt-transcribe",
+  /** Brand and place words sent to the transcriber so names are heard right. */
+  transcribeHints: true,
+  noiseReduction: "far_field",
+  /** Per-reply cap (tokens); null = the model's maximum. A safety net against runaway replies. */
+  maxOutputTokens: null,
+  /** Conversation tokens kept after the instructions on long calls; null = OpenAI's default. */
+  truncationTokens: null,
+};
 /** Tools mode: after this many tool rounds in one turn, the follow-up must speak (tools: []). */
 const MAX_TOOL_ROUNDS = 2;
 
 // Short, warm greeting — then stop and listen (no long intros)
 const GREETING = "Hi! I'm Buddy, your AI friend. Ask me anything you want.";
-// Friendly voice: marin (female); alternatives: coral, shimmer, sage
-const VOICE = "marin";
 
 function buildRealtimeInstructions(session, { toolsMode = false, webSearch = false } = {}) {
   const parts = [
@@ -88,23 +104,57 @@ function buildRealtimeInstructions(session, { toolsMode = false, webSearch = fal
 }
 
 /**
- * Caller speech → text for the router. gpt-transcribe: whisper-1 is removed from the API on
- * 2027-02-26, and on phone-quality test audio gpt-transcribe was more accurate (names, Spanish,
- * Chinese). REALTIME_TRANSCRIBE_MODEL switches it (e.g. back to whisper-1) without a code change.
+ * Response instructions REPLACE the session instructions for that reply (checked live 2026-11-02:
+ * a rule only in the session prompt was ignored once a reply had its own instructions). So every
+ * in-conversation reply carries the full call prompt first, then the turn's own rules. The prompt
+ * part is identical turn to turn, so it is served from OpenAI's prompt cache.
  */
-const TRANSCRIBE_MODEL = process.env.REALTIME_TRANSCRIBE_MODEL || "gpt-transcribe";
+function withCallPrompt(callPrompt, turnInstructions) {
+  return `${callPrompt}\n\n## This reply (authoritative — follow these for this reply)\n${turnInstructions}`;
+}
 
-/** Realtime input: denoise, then semantic turn detection (ChatGPT-like; waits on fillers / incomplete thoughts). */
-const REALTIME_INPUT_AUDIO = {
-  noise_reduction: { type: "far_field" },
-  transcription: { model: TRANSCRIBE_MODEL },
-  turn_detection: {
-    type: "semantic_vad",
-    eagerness: "medium",
-    interrupt_response: true,
-    create_response: false,
-  },
-};
+/** Words the transcriber should expect (names it otherwise mishears). */
+const TRANSCRIBE_PROMPT =
+  "Phone call with Buddy, an AI assistant by BuddyCallAI and Brash3D Media Group. " +
+  "Callers ask about weather, flights, hotels, restaurants, and places such as Medellín, Bogotá, Cartagena, Miami, Orlando, and San Juan, " +
+  "and may speak English, Spanish, Italian, Portuguese, French, or Chinese.";
+
+/**
+ * Realtime input: audio format, denoise, caller transcription (gpt-transcribe: whisper-1 is removed
+ * from the API on 2027-02-26 and was less accurate and slower on phone audio), then semantic turn
+ * detection (waits on fillers / incomplete thoughts; we create every response ourselves).
+ */
+function realtimeInputAudio(rt) {
+  const transcription = { model: rt.transcribeModel };
+  if (rt.transcribeHints) transcription.prompt = TRANSCRIBE_PROMPT;
+  return {
+    format: rt.audioFormat === "pcm24" ? { type: "audio/pcm", rate: 24000 } : { type: "audio/pcmu" },
+    noise_reduction: rt.noiseReduction === "off" ? null : { type: rt.noiseReduction },
+    transcription,
+    turn_detection: {
+      type: "semantic_vad",
+      eagerness: "medium",
+      interrupt_response: true,
+      create_response: false,
+    },
+  };
+}
+
+/** Session fields for cost and model control; each only sent when set. */
+function realtimeSessionExtras(rt) {
+  const extras = {};
+  // gpt-realtime rejects reasoning ("Unsupported option for this model", checked live): 2.x only
+  if (rt.reasoningEffort && /^gpt-realtime-2/.test(rt.model)) extras.reasoning = { effort: rt.reasoningEffort };
+  if (rt.maxOutputTokens) extras.max_output_tokens = rt.maxOutputTokens;
+  if (rt.truncationTokens) {
+    extras.truncation = {
+      type: "retention_ratio",
+      retention_ratio: 0.8,
+      token_limits: { post_instructions: rt.truncationTokens },
+    };
+  }
+  return extras;
+}
 
 const echoWords = (s) =>
   String(s || "")
@@ -127,6 +177,17 @@ function isEchoOfReply(text, reply) {
   return said.filter((w) => heard.has(w)).length / said.length >= 0.75;
 }
 const ECHO_WINDOW_MS = 8000;
+
+/** "Hi Buddy." / "Hello?" / "Hola, buenas tardes" — a greeting and nothing else. */
+function isGreetingOnly(text) {
+  const t = String(text || "")
+    .toLowerCase()
+    .replace(/[¡¿!?.,…]+/g, " ")
+    .trim();
+  return /^(?:(?:hi|hey|hello|hiya|yo|good (?:morning|afternoon|evening)|hola|buenas(?: tardes| noches| d[ií]as)?|buenos d[ií]as|ciao|ol[aá]|bonjour)\s*)+(?:(?:there|buddy|bud|man|again)\s*)*$/.test(t);
+}
+/** How long a greeting-only turn waits for the caller to go on before Buddy answers it. */
+const GREETING_HOLD_MS = 1200;
 
 function responseIdFromEvent(ev) {
   return ev?.response?.id || ev?.response_id || null;
@@ -260,11 +321,19 @@ function createMediaStreamHandler({
   latencyMetricsEnabled = true,
   /** "regex" (default, existing fast paths) or "tools" (model picks existing-service tools). */
   routerMode = "regex",
-  toolDeadlineMs = 2500,
-  realtimeUrl = OPENAI_REALTIME_URL,
+  toolDeadlineMs = 4000,
+  /** OpenAI Realtime session settings (config.realtime); missing fields use REALTIME_DEFAULTS. */
+  realtime = {},
+  /** Test servers only; production builds the URL from realtime.model. */
+  realtimeUrl = null,
   /** Limited calls: heads-up this many seconds before the time-up message. */
   timeWarningSeconds = 15,
+  /** Shared count of live calls (graceful shutdown waits for it to reach zero). */
+  activeCalls = null,
 }) {
+  const rt = { ...REALTIME_DEFAULTS, ...Object.fromEntries(Object.entries(realtime).filter(([, v]) => v !== undefined)) };
+  const openaiUrl = realtimeUrl || `wss://api.openai.com/v1/realtime?model=${encodeURIComponent(rt.model)}`;
+  const passThroughAudio = rt.audioFormat !== "pcm24";
   const toolsMode = routerMode === "tools";
   const toolServices = {
     weatherService,
@@ -324,6 +393,20 @@ function createMediaStreamHandler({
     /** Caller mid-utterance, and when they last stopped — the time heads-up never talks over them. */
     let callerSpeaking = false;
     let lastSpeechStoppedAt = 0;
+    /**
+     * The last response.create, kept for one retry: production logged "conversation already has an
+     * active response" when a new question arrived as an interrupted reply was still ending, and the
+     * caller's question went unanswered.
+     */
+    let lastCreate = null;
+    let retryAfterActiveEnds = null;
+    /** Token usage for the call (cost log at the end). */
+    const usage = emptyUsage();
+    let callStartedAt = 0;
+    let callClosed = false;
+    let speechStartedAt = 0;
+    /** A greeting-only turn waiting to see if the caller goes on ({ timer, turnId }). */
+    let pendingGreeting = null;
 
     /** Call immediately before each response.create; returns generation for metadata. */
     function markResponseCreateSent() {
@@ -333,16 +416,29 @@ function createMediaStreamHandler({
       return expectedGeneration;
     }
 
-    function createResponsePayload(responseFields, metricsTurnId) {
+    /**
+     * standalone: the instructions are the whole prompt (greeting, out-of-band time messages);
+     * otherwise the call prompt is put first, since reply instructions replace the session's.
+     */
+    function createResponsePayload(responseFields, metricsTurnId, { standalone = false } = {}) {
       const gen = markResponseCreateSent();
       metrics.onResponseCreateSent(metricsTurnId, gen);
-      return {
+      const fields = { ...responseFields };
+      if (fields.instructions && !standalone && fields.conversation !== "none") {
+        fields.instructions = withCallPrompt(
+          buildRealtimeInstructions(callStore.get(callSid), { toolsMode, webSearch: webSearchOffered }),
+          fields.instructions
+        );
+      }
+      const payload = {
         type: "response.create",
         response: {
-          ...responseFields,
-          metadata: { ...(responseFields.metadata || {}), client_gen: String(gen) },
+          ...fields,
+          metadata: { ...(fields.metadata || {}), client_gen: String(gen) },
         },
       };
+      lastCreate = { payload, gen, retried: false };
+      return payload;
     }
 
     /** Cancel in-flight agent audio only — never stop inbound user audio append. */
@@ -444,7 +540,45 @@ function createMediaStreamHandler({
       });
     }
 
+    /** Sends the reply queued after "active response" (once), if no newer turn replaced it. */
+    function sendQueuedReply() {
+      const queued = retryAfterActiveEnds;
+      retryAfterActiveEnds = null;
+      if (!queued || queued.gen !== expectedGeneration) return;
+      if (!openaiWs || openaiWs.readyState !== WebSocket.OPEN) return;
+      responseInProgress = true;
+      openaiWs.send(JSON.stringify(queued.payload));
+      logger.info({ callSid }, "Queued reply sent");
+    }
+
+    /** Token usage and estimated OpenAI cost for the call — one log line at the end. */
+    function logCallUsage() {
+      if (!callSid || !usage.responses) return;
+      const callSeconds = callStartedAt ? Math.round((Date.now() - callStartedAt) / 1000) : 0;
+      const cost = estimateCost(usage, { model: rt.model, transcribeModel: rt.transcribeModel, callSeconds });
+      logger.info(
+        {
+          metric: "call_usage",
+          callSid,
+          model: rt.model,
+          transcribeModel: rt.transcribeModel,
+          routerMode,
+          callSeconds,
+          ...usage,
+          estUsd: cost.usd,
+          estUsdPerMinute: cost.usdPerMinute,
+          cachedShare: cost.cachedShare,
+        },
+        "Call usage"
+      );
+    }
+
     const cleanup = () => {
+      if (callClosed) return;
+      callClosed = true;
+      if (pendingGreeting) clearTimeout(pendingGreeting.timer);
+      if (activeCalls && callSid) activeCalls.delete(callSid);
+      logCallUsage();
       metrics.flush();
       if (timeLimitTimer) {
         clearInterval(timeLimitTimer);
@@ -473,6 +607,8 @@ function createMediaStreamHandler({
         streamSid = msg.start?.streamSid || msg.streamSid;
         metrics.setCallSid(callSid);
         callStore.getOrCreate(callSid);
+        callStartedAt = Date.now();
+        if (activeCalls && callSid) activeCalls.add(callSid);
         // The greeting reaches the transcript from its spoken audio, like every other reply
         logger.info({ callSid, streamSid }, "Media stream started");
 
@@ -554,14 +690,14 @@ function createMediaStreamHandler({
         }
 
         // Connect to OpenAI Realtime
-        openaiWs = new WebSocket(realtimeUrl, {
+        openaiWs = new WebSocket(openaiUrl, {
           headers: {
             Authorization: `Bearer ${openaiApiKey}`,
           },
         });
 
         openaiWs.on("open", () => {
-          logger.info({ callSid }, "OpenAI Realtime connected");
+          logger.info({ callSid, model: rt.model, audioFormat: rt.audioFormat, transcribeModel: rt.transcribeModel }, "OpenAI Realtime connected");
           const billSession = callStore.get(callSid);
           if (billSession && !billSession.replyLanguage) {
             billSession.replyLanguage = "en";
@@ -570,11 +706,13 @@ function createMediaStreamHandler({
             type: "realtime",
             instructions: buildRealtimeInstructions(billSession, { toolsMode, webSearch: webSearchOffered }),
             audio: {
-              input: REALTIME_INPUT_AUDIO,
+              input: realtimeInputAudio(rt),
               output: {
-                voice: VOICE,
+                ...(passThroughAudio ? { format: { type: "audio/pcmu" } } : { format: { type: "audio/pcm", rate: 24000 } }),
+                voice: rt.voice,
               },
             },
+            ...realtimeSessionExtras(rt),
             ...sessionToolFields(),
           };
           openaiWs.send(
@@ -588,7 +726,8 @@ function createMediaStreamHandler({
                   instructions: `Say exactly: ${GREETING}`,
                   tools: [],
                 },
-                metrics.beginSystemTurn("greeting")
+                metrics.beginSystemTurn("greeting"),
+                { standalone: true }
               )
             )
           );
@@ -608,6 +747,21 @@ function createMediaStreamHandler({
                 { callSid, code: ev.error.code },
                 "Ignore benign response.cancel (no active response)"
               );
+              return;
+            }
+            // A new reply was asked for while an interrupted one was still ending: send it again
+            // once that one ends, unless the caller has spoken since (a newer turn replaced it)
+            if (
+              ev.error?.code === "conversation_already_has_active_response" &&
+              lastCreate &&
+              !lastCreate.retried &&
+              lastCreate.gen === expectedGeneration
+            ) {
+              lastCreate.retried = true;
+              retryAfterActiveEnds = lastCreate;
+              logger.info({ callSid }, "Reply queued: previous response still ending");
+              // If no end event arrives, send it anyway shortly
+              setTimeout(sendQueuedReply, 1500);
               return;
             }
             logger.error({ callSid, error: ev.error }, "OpenAI Realtime error");
@@ -635,8 +789,15 @@ function createMediaStreamHandler({
             }
             const sess = callStore.get(callSid);
             const langName = languageLabel(sess?.replyLanguage || "en");
-            const instruction =
-              opts.multilingual !== false
+            // Fixed answers (identity, recording, billing, language): never shortened or reworded —
+            // live replay: "our chat stays on this line" replaced the transcript sentence
+            const exactInstruction =
+              langName === "English"
+                ? `Say only the quoted text, word for word, adding nothing: "${reply}"`
+                : `Say this in ${langName} and nothing else, translating it fully and keeping every fact, number, and website (don't shorten it): ${reply}`;
+            const instruction = opts.exact
+              ? exactInstruction
+              : opts.multilingual !== false
                 ? `Say the following in ${langName} only, ${
                     opts.maxWords
                       ? `in up to ${opts.maxWords} words, keeping every name and number`
@@ -667,7 +828,8 @@ function createMediaStreamHandler({
             logger.info({ callSid }, logLabel);
           }
 
-          function handleUserTranscript(text, turnId) {
+          /** held: re-entered after the greeting pause (logging, transcript, and counters already done). */
+          function handleUserTranscript(text, turnId, { held = false } = {}) {
             // Metrics helpers bound to this turn (pass results through unchanged)
             const sendReply = (reply, opts = {}) => sendReplyBase(reply, { ...opts, turnId });
             const timed = (label, fn) => metrics.time(turnId, label, fn);
@@ -682,26 +844,52 @@ function createMediaStreamHandler({
               metrics.finishWithoutReply(turnId, "empty");
               return;
             }
-            const userLog = trimmed.length > 100 ? trimmed.slice(0, 100) + "…" : trimmed;
-            logger.info({ callSid, transcript: trimmed, role: "user" }, `USER: ${userLog}`);
-            if (Date.now() - lastAiReply.at < ECHO_WINDOW_MS && isEchoOfReply(trimmed, lastAiReply.text)) {
-              logger.info({ callSid, transcript: trimmed }, "Skip turn: echo of Buddy's own reply");
-              metrics.finishWithoutReply(turnId, "echo");
-              return;
-            }
-            if (trimmed === lastUserTranscript) {
-              metrics.finishWithoutReply(turnId, "duplicate");
-              return;
-            }
-            lastUserTranscript = trimmed;
-            transcriptLines.push(`Caller: ${trimmed}`);
-            callStore.addUserMessage(callSid, trimmed);
-
             const sessionRef = callStore.get(callSid);
-            if (sessionRef) sessionRef.callerTurns = (sessionRef.callerTurns || 0) + 1;
+            if (!held) {
+              const userLog = trimmed.length > 100 ? trimmed.slice(0, 100) + "…" : trimmed;
+              logger.info({ callSid, transcript: trimmed, role: "user" }, `USER: ${userLog}`);
+              if (Date.now() - lastAiReply.at < ECHO_WINDOW_MS && isEchoOfReply(trimmed, lastAiReply.text)) {
+                logger.info({ callSid, transcript: trimmed }, "Skip turn: echo of Buddy's own reply");
+                metrics.finishWithoutReply(turnId, "echo");
+                return;
+              }
+              if (trimmed === lastUserTranscript) {
+                metrics.finishWithoutReply(turnId, "duplicate");
+                return;
+              }
+              lastUserTranscript = trimmed;
+              transcriptLines.push(`Caller: ${trimmed}`);
+              callStore.addUserMessage(callSid, trimmed);
+              if (sessionRef) sessionRef.callerTurns = (sessionRef.callerTurns || 0) + 1;
+            }
             if (sessionRef?.callEnding) {
               logger.info({ callSid }, "Skip turn: call ending (time limit)");
               metrics.finishWithoutReply(turnId, "call_ending");
+              return;
+            }
+
+            // "Hi Buddy," then a pause, then the real question: the turn detector often ends the turn
+            // after the greeting, and Buddy's small talk ran over the question (replay 2026-11-02). A
+            // greeting alone waits briefly: if the caller keeps talking, their next words are the turn.
+            if (!held && pendingGreeting) {
+              // The caller went on after a greeting: answer this, not the greeting
+              clearTimeout(pendingGreeting.timer);
+              metrics.finishWithoutReply(pendingGreeting.turnId, "greeting_merged");
+              logger.info({ callSid }, "Greeting not answered: the caller kept talking");
+              pendingGreeting = null;
+            }
+            if (!held && isGreetingOnly(trimmed)) {
+              const seqAtGreeting = userSpeechSeq;
+              const timer = setTimeout(() => {
+                pendingGreeting = null;
+                if (userSpeechSeq !== seqAtGreeting || callerSpeaking) {
+                  logger.info({ callSid, transcript: trimmed }, "Greeting not answered: the caller kept talking");
+                  metrics.finishWithoutReply(turnId, "greeting_merged");
+                  return;
+                }
+                handleUserTranscript(text, turnId, { held: true });
+              }, GREETING_HOLD_MS);
+              pendingGreeting = { timer, turnId };
               return;
             }
 
@@ -719,14 +907,14 @@ function createMediaStreamHandler({
             if (langUpdate.acceptedOffer) {
               metrics.setRoute(turnId, "language");
               const name = languageLabel(langUpdate.language);
-              sendReply(`Sure, I'll speak ${name} from now on. How can I help you?`, { multilingual: true });
+              sendReply(`Sure, I'll speak ${name} from now on. How can I help you?`, { exact: true });
               return;
             }
             // "Do you speak Spanish?" — answer and offer in the current language; switch only on yes
             if (langUpdate.offer) {
               metrics.setRoute(turnId, "language");
               const name = languageLabel(langUpdate.offer);
-              sendReply(`Yes, I can speak ${name}. Would you like me to switch to ${name}?`, { multilingual: true });
+              sendReply(`Yes, I can speak ${name}. Would you like me to switch to ${name}?`, { exact: true });
               return;
             }
 
@@ -756,7 +944,7 @@ function createMediaStreamHandler({
             const identity = identityReply(trimmed);
             if (identity) {
               metrics.setRoute(turnId, "identity");
-              sendReply(identity, { multilingual: true });
+              sendReply(identity, { exact: true });
               return;
             }
 
@@ -764,8 +952,8 @@ function createMediaStreamHandler({
             if (isBillingQuestion(trimmed)) {
               metrics.setRoute(turnId, "billing");
               const fact = billingReply(sessionRef, trimmed);
-              // The plan list runs ~50 words; a 20-word cap would drop plans or prices
-              sendReply(fact, { multilingual: true, maxWords: isPlanCatalogQuestion(trimmed) ? 60 : undefined });
+              // Word for word: the plan list runs ~50 words, and "never charged" must not be dropped
+              sendReply(fact, { exact: true });
               return;
             }
 
@@ -936,9 +1124,7 @@ function createMediaStreamHandler({
               const quote = iso.quote || spoken.quote;
               (async () => {
                 const result = await timed("fx", () => fxService.getRate(base, quote));
-                const fact = result.error
-                  ? result.error
-                  : `One ${result.base} equals ${result.rate.toFixed(4)} ${result.quote}.`;
+                const fact = result.error ? result.error : spokenRate(result);
                 sendReply(fact, { multilingual: !result.error });
               })();
               return;
@@ -1175,6 +1361,7 @@ function createMediaStreamHandler({
           if (ev.type === "input_audio_buffer.speech_started") {
             userSpeechSeq += 1;
             callerSpeaking = true;
+            speechStartedAt = Date.now();
             metrics.onSpeechStarted(ev.item_id);
             interruptAgentPlayback();
           }
@@ -1182,6 +1369,9 @@ function createMediaStreamHandler({
           if (ev.type === "input_audio_buffer.speech_stopped") {
             callerSpeaking = false;
             lastSpeechStoppedAt = Date.now();
+            // Caller speech sent to transcription (priced per minute)
+            if (speechStartedAt) usage.speechSeconds += (lastSpeechStoppedAt - speechStartedAt) / 1000;
+            speechStartedAt = 0;
             metrics.onSpeechStopped(ev.item_id);
           }
 
@@ -1223,6 +1413,9 @@ function createMediaStreamHandler({
           ) {
             const endedId = responseIdFromEvent(ev);
             const endedTurnId = metrics.turnForResponse(endedId);
+            if (ev.type === "response.done") addResponseUsage(usage, ev.response?.usage);
+            // The interrupted reply has ended: the queued one can go now
+            if (retryAfterActiveEnds && endedId !== activeResponseId) setImmediate(sendQueuedReply);
             metrics.onResponseEnded(
               endedId,
               ev.type === "response.done" ? ev.response?.status || "done" : ev.type.slice(9),
@@ -1323,7 +1516,8 @@ function createMediaStreamHandler({
             } else {
               responseInProgress = true;
               try {
-                const mulawBase64 = openAIToTwilio(ev.delta);
+                // μ-law session: OpenAI's audio is already Twilio's format
+                const mulawBase64 = passThroughAudio ? ev.delta : openAIToTwilio(ev.delta);
                 twilioWs.send(
                   JSON.stringify({
                     event: "media",
@@ -1347,8 +1541,19 @@ function createMediaStreamHandler({
           }
         });
 
-        openaiWs.on("close", () => {
-          logger.info({ callSid }, "OpenAI Realtime closed");
+        openaiWs.on("close", (code) => {
+          logger.info({ callSid, code }, "OpenAI Realtime closed");
+          // Closed by OpenAI or the network while the caller is still on the line: no more replies
+          // can come, so apologise and hang up rather than leave them in silence
+          if (callClosed || callStore.get(callSid)?.callEnding || !twilioClient || !callSid) return;
+          logger.warn({ callSid, code }, "OpenAI connection lost mid-call: ending call politely");
+          const spanish = callStore.get(callSid)?.replyLanguage === "es";
+          const twiml = spanish
+            ? '<Response><Say language="es-US">Lo siento, perdí la conexión. Por favor, llama de nuevo en un momento.</Say><Hangup/></Response>'
+            : "<Response><Say>Sorry, I lost my connection. Please call again in a moment.</Say><Hangup/></Response>";
+          Promise.resolve()
+            .then(() => twilioClient.calls(callSid).update({ twiml }))
+            .catch((err) => logger.error({ callSid, err: err.message }, "Could not end call after lost connection"));
         });
 
         openaiWs.on("error", (err) => {
@@ -1362,11 +1567,10 @@ function createMediaStreamHandler({
         const payload = msg.media?.payload;
         if (!payload) return;
         try {
-          const pcm24Base64 = twilioToOpenAI(payload);
           openaiWs.send(
             JSON.stringify({
               type: "input_audio_buffer.append",
-              audio: pcm24Base64,
+              audio: passThroughAudio ? payload : twilioToOpenAI(payload),
             })
           );
         } catch (err) {

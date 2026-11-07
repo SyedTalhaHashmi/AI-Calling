@@ -7,8 +7,9 @@
     "build": "node --check server.js && node --check handlers/mediaStream.js && node --check utils/intentRouter.js",
     "start": "node server.js",
     "dev": "node --watch server.js",
-    "test": "node test/intentRouter.test.js && node test/languageBilling.test.js && node test/turnMetrics.test.js && node test/cache.test.js && node test/stocksCache.test.js && node test/time.test.js && node test/webSearch.test.js && node test/providerReliability.test.js && node test/realtimeTools.test.js && node test/mediaStreamRouting.test.js && node test/callRoutes.test.js && node test/identity.test.js && node test/safety.test.js && node test/spokenFacts.test.js && node test/travelDates.test.js && node test/travelFares.test.js",
+    "test": "node test/intentRouter.test.js && node test/languageBilling.test.js && node test/turnMetrics.test.js && node test/cache.test.js && node test/stocksCache.test.js && node test/time.test.js && node test/webSearch.test.js && node test/providerReliability.test.js && node test/realtimeTools.test.js && node test/mediaStreamRouting.test.js && node test/callRoutes.test.js && node test/identity.test.js && node test/safety.test.js && node test/spokenFacts.test.js && node test/travelDates.test.js && node test/travelFares.test.js && node test/realtimeCost.test.js",
     "latency:report": "node dev/latencyReport.js",
+    "call:report": "node dev/callReport.js",
     "test:live": "node test/liveApiSmoke.test.js",
     "test:complex": "node test/complexFlows.test.js",
     "test:unique": "node test/uniqueUserAsks.test.js"
@@ -26,7 +27,6 @@
     "dotenv": "^18.0.9",
     "express": "^5.3.0",
     "nodemailer": "^10.2.1",
-    "openai": "^7.45.1",
     "pino": "^10.4.0",
     "twilio": "^6.2.0",
     "ws": "^8.22.0"

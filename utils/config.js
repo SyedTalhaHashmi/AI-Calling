@@ -4,6 +4,19 @@ const { parseWebSearchDailyLimit } = require("../services/webSearch");
 
 dotenv.config();
 
+/** Trimmed value, or undefined when unset or blank (so the handler's default applies). */
+function env(name) {
+  const v = (process.env[name] || "").trim();
+  return v || undefined;
+}
+
+const oneOf = (value, allowed) => (allowed.includes(String(value || "").toLowerCase()) ? String(value).toLowerCase() : undefined);
+
+function positiveInt(value) {
+  const n = Number(value);
+  return Number.isInteger(n) && n > 0 ? n : undefined;
+}
+
 function required(name) {
   const value = process.env[name];
   if (!value) {
@@ -25,6 +38,20 @@ const config = {
   openai: {
     apiKey: required("OPENAI_API_KEY"),
   },
+  /** OpenAI Realtime session (calls). Every model name lives here so a retired model is one .env change. */
+  realtime: {
+    model: env("REALTIME_MODEL"),
+    reasoningEffort: oneOf(env("REALTIME_REASONING_EFFORT"), ["minimal", "low", "medium", "high"]),
+    voice: env("REALTIME_VOICE"),
+    audioFormat: oneOf(env("REALTIME_AUDIO_FORMAT"), ["pcmu", "pcm24"]),
+    transcribeModel: env("REALTIME_TRANSCRIBE_MODEL"),
+    transcribeHints: env("REALTIME_TRANSCRIBE_HINTS") ? env("REALTIME_TRANSCRIBE_HINTS") !== "false" : undefined,
+    noiseReduction: oneOf(env("REALTIME_NOISE_REDUCTION"), ["near_field", "far_field", "off"]),
+    maxOutputTokens: positiveInt(env("REALTIME_MAX_OUTPUT_TOKENS")),
+    truncationTokens: positiveInt(env("REALTIME_TRUNCATION_TOKENS")),
+  },
+  /** Seconds a redeploy waits for live calls to finish before the server stops. */
+  shutdownGraceSeconds: positiveInt(env("SHUTDOWN_GRACE_SECONDS")) || 25,
   openweather: {
     apiKey: process.env.OPENWEATHER_API_KEY || "",
   },
@@ -67,6 +94,7 @@ const config = {
     /**
      * Fallback when caller-check has no line email (anonymous trial only).
      * Registered callers (subscriber or free trial) use UserPhoneNumber.emailForTranscripts.
+     * Comma/semicolon-separated list allowed; every address receives the transcript.
      */
     to: (process.env.EMAIL_TO || "").trim(),
     smtpHost: process.env.SMTP_HOST || "",

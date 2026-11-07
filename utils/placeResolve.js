@@ -212,6 +212,43 @@ function findCountryInText(text) {
   return null;
 }
 
+/**
+ * Local city names callers use → the English name the weather search knows. Live replay
+ * 2026-11-02: "Che tempo fa a Roma?" got Romania's weather ("Roma" isn't found as Rome).
+ */
+const CITY_ENDONYMS = {
+  roma: ["Rome", "IT"],
+  milano: ["Milan", "IT"],
+  napoli: ["Naples", "IT"],
+  firenze: ["Florence", "IT"],
+  venezia: ["Venice", "IT"],
+  torino: ["Turin", "IT"],
+  genova: ["Genoa", "IT"],
+  lisboa: ["Lisbon", "PT"],
+  londres: ["London", "GB"],
+  "nueva york": ["New York", "US"],
+  "nova york": ["New York", "US"],
+  "nova iorque": ["New York", "US"],
+  münchen: ["Munich", "DE"],
+  muenchen: ["Munich", "DE"],
+  köln: ["Cologne", "DE"],
+  wien: ["Vienna", "AT"],
+  praha: ["Prague", "CZ"],
+  varsovia: ["Warsaw", "PL"],
+  bruselas: ["Brussels", "BE"],
+  ginebra: ["Geneva", "CH"],
+  pekín: ["Beijing", "CN"],
+  pekin: ["Beijing", "CN"],
+  "ciudad de méxico": ["Mexico City", "MX"],
+  "ciudad de mexico": ["Mexico City", "MX"],
+};
+
+/** { city, country } in English for a local name, or null. */
+function cityFromEndonym(name) {
+  const hit = CITY_ENDONYMS[String(name || "").trim().toLowerCase()];
+  return hit ? { city: hit[0], country: hit[1] } : null;
+}
+
 function defaultCityForCountry(code) {
   if (!code) return null;
   return COUNTRY_DEFAULT_CITY[String(code).toUpperCase()] || null;
@@ -269,6 +306,8 @@ function extractWeatherPlaces(text) {
     /\ben\s+([a-zA-ZÀ-ÿ .'-]{2,60}?)\s+(?:el\s+)?(?:clima|tiempo|temperatura)\b/i,
     // ES: qué tiempo hace en X
     /\b(?:qu[eé]\s+tiempo\s+hace|c[oó]mo\s+est[aá]\s+el\s+clima)\s+(?:en|de)\s+(.+?)(?:\s*[?!]|\s*$)/i,
+    // IT / PT: che tempo fa a Roma, meteo a Milano, vai chover em São Paulo
+    /\b(?:che\s+tempo\s+fa|meteo|previsioni|piove|pioverà|tempo|chover|chuva)\s+(?:a|ad|in|di|per|em|no|na)\s+(.+?)(?:\s*[?!]|\s*$)/i,
     // EN how warm/cold in X
     /\b(?:how\s+(?:warm|cold|hot)|temperature)\s+(?:is\s+it\s+)?(?:in|at|for)\s+(.+?)(?:\s*[?!]|\s*$)/i,
     // generic: in/at/for/of X[, country]
@@ -286,7 +325,7 @@ function extractWeatherPlaces(text) {
     // Drop leading filler from city chunk
     cityChunk = cityChunk
       .replace(/^(?:the|el|la|los|las)\s+/i, "")
-      .replace(/\b(?:hoy|today|tomorrow|manana|mañana|please|por favor|ahora|right now)\b/gi, " ")
+      .replace(/(?<![\p{L}])(?:hoy|today|tomorrow|manana|mañana|please|por favor|ahora|right now|oggi|domani|hoje|amanhã)(?![\p{L}])/giu, " ")
       .replace(/\s+/g, " ")
       .trim();
     // Ignore time-only phrases ("la otra semana", "next week") — use country hint instead.
@@ -342,10 +381,12 @@ function extractWeatherPlaces(text) {
     }
   }
 
-  const places = cities.map((city) => ({
-    city,
-    country: countryFromInline || undefined,
-  }));
+  const places = cities.map((city) => {
+    const english = cityFromEndonym(city);
+    return english
+      ? { city: english.city, country: countryFromInline || english.country }
+      : { city, country: countryFromInline || undefined };
+  });
 
   return {
     places: places.length ? places : [],
@@ -358,8 +399,13 @@ function extractWeatherPlaces(text) {
  * @param {Array<{ name?: string, country_code?: string, country?: string, population?: number }>} results
  * @param {string|null|undefined} wantCountry ISO2 or name
  */
+/** Country / region entries (GeoNames PCL*, ADM*) are not cities — "Roma" listed Romania first. */
+const isAreaEntry = (r) => /^(PCL|ADM)/.test(String(r?.feature_code || ""));
+
 function pickGeoResult(results, wantCountry) {
   if (!Array.isArray(results) || !results.length) return null;
+  const places = results.filter((r) => !isAreaEntry(r));
+  if (places.length) results = places;
   const code = normalizeCountryCode(wantCountry);
   if (code) {
     const match = results.find(
@@ -380,6 +426,7 @@ module.exports = {
   defaultCityForCountry,
   extractWeatherPlaces,
   pickGeoResult,
+  cityFromEndonym,
   splitCityAlternatives,
   COUNTRY_ALIASES,
   COUNTRY_DEFAULT_CITY,

@@ -10,6 +10,19 @@ function resolveFromHeader(emailConfig) {
   return addr;
 }
 
+/** "a@x.com, b@y.com; c@z.com" → ["a@x.com", "b@y.com", "c@z.com"] (trimmed, case-insensitive dedupe). */
+function parseRecipients(value) {
+  const seen = new Set();
+  const out = [];
+  for (const raw of String(value || "").split(/[,;\s]+/)) {
+    const addr = raw.trim();
+    if (!addr || seen.has(addr.toLowerCase())) continue;
+    seen.add(addr.toLowerCase());
+    out.push(addr);
+  }
+  return out;
+}
+
 function escapeHtml(value) {
   return String(value ?? "")
     .replace(/&/g, "&amp;")
@@ -102,10 +115,10 @@ function createEmailService({ emailConfig, logger }) {
 
   async function sendTranscript({ callSid, transcriptBody, startedAt, to }) {
     const dateLabel = startedAt ? new Date(startedAt).toISOString() : new Date().toISOString();
-    /** Prefer platform/DB line email (subscriber or registered trial); else EMAIL_TO for anonymous trial. */
-    const destination =
-      (to && String(to).trim()) || (emailConfig.to && String(emailConfig.to).trim()) || "";
-    if (!destination) {
+    /** Prefer platform/DB line email (subscriber or registered trial); else every EMAIL_TO address for anonymous trial. */
+    const lineRecipients = parseRecipients(to);
+    const destination = lineRecipients.length ? lineRecipients : parseRecipients(emailConfig.to);
+    if (!destination.length) {
       const err = new Error(
         "No transcript recipient: ensure PLATFORM_API_* returns transcriptEmail from UserPhoneNumber for registered callers; set EMAIL_TO only as fallback for anonymous trials."
       );
@@ -143,3 +156,4 @@ function createEmailService({ emailConfig, logger }) {
 }
 
 module.exports = createEmailService;
+module.exports.parseRecipients = parseRecipients;

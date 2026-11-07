@@ -151,11 +151,12 @@ const ALL_TOOLS = [
     assert.deepStrictEqual(calls, [["openMeteo.getByCity", "San Juan", "PR"]]);
   });
 
-  await check("get_exchange_rate upper-cases ISO codes", async () => {
+  await check("get_exchange_rate upper-cases ISO codes and rounds the rate for speech", async () => {
     const { services, calls } = stubServices();
     const ex = createToolExecutor({ services, logger, deadlineMs: 1000 });
     const r = await ex.execute("get_exchange_rate", { base: "usd", quote: "cop" });
-    assert.strictEqual(r.rate, 3163.36);
+    // 3163.36 → 3163 (live replay: the model read "3176.91" digit by digit)
+    assert.strictEqual(r.rate, 3163);
     assert.deepStrictEqual(calls, [["fx.getRate", "USD", "COP"]]);
   });
 
@@ -179,15 +180,59 @@ const ALL_TOOLS = [
     assert.deepStrictEqual(calls, [["travel.cheapestRoute", "BOG", "MIA"]]);
   });
 
-  await check("get_flight_fare with dates prices those dates (one-way unless a return date)", async () => {
+  await check("get_flight_fare with dates prices those dates; trip type as said, unsaid month search may be round trip", async () => {
     const { services, calls } = stubServices();
     const ex = createToolExecutor({ services, logger, deadlineMs: 1000 });
     await ex.execute("get_flight_fare", { origin: "bog", destination: "mia", departure_date: "2026-11-02", return_date: "2026-11-06" });
     await ex.execute("get_flight_fare", { origin: "bog", destination: "mia", departure_date: "2026-12" });
+    await ex.execute("get_flight_fare", { origin: "mde", destination: "bog", departure_date: "2026-11-03", one_way: true });
+    await ex.execute("get_flight_fare", { origin: "mia", destination: "bog", departure_date: "2026-12", one_way: true });
     assert.deepStrictEqual(calls, [
       ["travel.fareForTrip", "BOG", "MIA", { departDate: "2026-11-02", returnDate: "2026-11-06", departMonth: null, oneWay: false }],
-      ["travel.fareForTrip", "BOG", "MIA", { departDate: null, returnDate: null, departMonth: "2026-12", oneWay: true }],
+      // Same as the regex router: trip type not said → round trip may be tried
+      ["travel.fareForTrip", "BOG", "MIA", { departDate: null, returnDate: null, departMonth: "2026-12", oneWay: null }],
+      ["travel.fareForTrip", "MDE", "BOG", { departDate: "2026-11-03", returnDate: null, departMonth: null, oneWay: true }],
+      ["travel.fareForTrip", "MIA", "BOG", { departDate: null, returnDate: null, departMonth: "2026-12", oneWay: true }],
     ]);
+  });
+
+  await check("parity with regex: hotel tier search and the same hotel price rules", async () => {
+    const { services, calls } = stubServices();
+    const ex = createToolExecutor({ services, logger, deadlineMs: 1000 });
+    await ex.execute("find_places", { kind: "hotel", location: "Miami", tier: "budget" });
+    await ex.execute("find_places", { kind: "hotel", location: "Miami", tier: "fancy" });
+    assert.deepStrictEqual(calls, [
+      ["places.searchHotels", "Miami", "budget"],
+      ["places.searchHotels", "Miami"],
+    ]);
+    const def = buildToolDefinitions(services).find((t) => t.name === "find_places");
+    assert.deepStrictEqual(def.parameters.properties.tier.enum, ["budget", "luxury"]);
+    for (const rule of [/total for the stay/, /high or low season/, /Never give a price for a named hotel/, /not live rates/]) {
+      assert.ok(rule.test(def.description), rule);
+    }
+  });
+
+  await check("parity with regex: the fare tool explains a different return day and takes one_way", async () => {
+    const { services } = stubServices();
+    const def = buildToolDefinitions(services).find((t) => t.name === "get_flight_fare");
+    assert.ok(/other_return/.test(def.description) && /requestedReturn/.test(def.description));
+    assert.strictEqual(def.parameters.properties.one_way.type, "boolean");
+  });
+
+  await check("fare tool: an airline code with no known name is left out (never read aloud)", async () => {
+    const { services } = stubServices();
+    services.travelService.fareForTrip = async () => ({ price: 376, airline: "DM", airlineName: "", match: "near" });
+    services.travelService.cheapestRoute = async () => ({ price: 410, airline: "AV", airlineName: "Avianca" });
+    const ex = createToolExecutor({ services, logger, deadlineMs: 1000 });
+    const unknown = await ex.execute("get_flight_fare", { origin: "BOG", destination: "MIA", departure_date: "2026-11-06" });
+    assert.ok(!("airline" in unknown) && unknown.price === 376, JSON.stringify(unknown));
+    const known = await ex.execute("get_flight_fare", { origin: "BOG", destination: "MIA" });
+    assert.deepStrictEqual([known.airline, known.airlineName], ["AV", "Avianca"]);
+  });
+
+  await check("tools turn gives today's date, so 'tomorrow' / 'Sunday' become real fare dates", async () => {
+    const t = toolsTurnInstruction("English", { now: Date.parse("2026-11-02T15:00:00Z") });
+    assert.ok(/It is now Monday, November 2, 2026, 15:00 UTC/.test(t), t);
   });
 
   await check("get_flight_status strips spaces from flight number", async () => {
@@ -385,12 +430,12 @@ const ALL_TOOLS = [
     assert.strictEqual(parseRouterMode("auto"), "regex");
   });
 
-  await check("TOOL_DEADLINE_MS defaults to 2500 and rejects junk", async () => {
-    assert.strictEqual(parseToolDeadlineMs(undefined), 2500);
+  await check("TOOL_DEADLINE_MS defaults to 4000 and rejects junk", async () => {
+    assert.strictEqual(parseToolDeadlineMs(undefined), 4000);
     assert.strictEqual(parseToolDeadlineMs("4000"), 4000);
-    assert.strictEqual(parseToolDeadlineMs("abc"), 2500);
-    assert.strictEqual(parseToolDeadlineMs("0"), 2500);
-    assert.strictEqual(parseToolDeadlineMs("-5"), 2500);
+    assert.strictEqual(parseToolDeadlineMs("abc"), 4000);
+    assert.strictEqual(parseToolDeadlineMs("0"), 4000);
+    assert.strictEqual(parseToolDeadlineMs("-5"), 4000);
   });
 
   await check("shadow agreement compares regex intent to model tool choice", async () => {

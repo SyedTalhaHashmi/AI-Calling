@@ -5,12 +5,33 @@ const {
   normalizeCountryCode,
   defaultCityForCountry,
   pickGeoResult,
+  cityFromEndonym,
 } = require("../utils/placeResolve");
 
 const GEO_URL = "https://geocoding-api.open-meteo.com/v1/search";
 const WEATHER_URL = "https://api.open-meteo.com/v1/forecast";
 /** City coordinates don't change; caching them skips one of the two requests (~0.5–0.9 s cold). */
 const GEO_TTL_MS = 24 * 60 * 60 * 1000;
+/** Current conditions change slowly: 10 minutes lets repeat and follow-up asks (any caller) answer at once. */
+const WEATHER_TTL_MS = 10 * 60 * 1000;
+/** Per attempt; one retry on timeout / network / 5xx (live replay: one hiccup became "couldn't get the weather"). */
+const ATTEMPT_TIMEOUT_MS = 1800;
+
+const isRetryable = (err) => {
+  const status = err?.response?.status;
+  return status ? status >= 500 : true;
+};
+
+/** GET with one retry on a retryable failure. */
+async function getWithRetry(url, params) {
+  const opts = { params, timeout: ATTEMPT_TIMEOUT_MS, httpsAgent: keepAliveAgent };
+  try {
+    return await axios.get(url, opts);
+  } catch (err) {
+    if (!isRetryable(err)) throw err;
+    return axios.get(url, opts);
+  }
+}
 
 const WMO_DESC = {
   0: "clear sky",
@@ -78,20 +99,12 @@ function createOpenMeteoService(enabled, logger, { now } = {}) {
       geoParams.countryCode = effectiveCountry;
     }
 
-    const geo = await axios.get(GEO_URL, {
-      params: geoParams,
-      timeout: 2500,
-      httpsAgent: keepAliveAgent,
-    });
+    const geo = await getWithRetry(GEO_URL, geoParams);
 
     let results = geo.data?.results || [];
     // If country filter returned nothing, retry without filter then pick by country
     if (!results.length && effectiveCountry) {
-      const retry = await axios.get(GEO_URL, {
-        params: { name: placeName, count: 10, language: "en", format: "json" },
-        timeout: 2500,
-        httpsAgent: keepAliveAgent,
-      });
+      const retry = await getWithRetry(GEO_URL, { name: placeName, count: 10, language: "en", format: "json" });
       results = retry.data?.results || [];
     }
     if (results.length) geoCache.set(geoKey, results, GEO_TTL_MS);
@@ -101,6 +114,12 @@ function createOpenMeteoService(enabled, logger, { now } = {}) {
   async function getByCity(city, country) {
     let placeName = String(city || "").trim();
     let effectiveCountry = normalizeCountryCode(country);
+    // "Roma" / "Milano" (either router mode) → the English name the geocoder finds
+    const english = cityFromEndonym(placeName);
+    if (english) {
+      placeName = english.city;
+      effectiveCountry = effectiveCountry || english.country;
+    }
 
     // Country-only: city arg is "Puerto Rico" / "France" / etc.
     const cityAsCountry = normalizeCountryCode(placeName);
@@ -147,18 +166,13 @@ function createOpenMeteoService(enabled, logger, { now } = {}) {
         }
       }
 
-      const weather = await axios.get(WEATHER_URL, {
-        params: {
-          latitude: place.latitude,
-          longitude: place.longitude,
-          current:
-            "temperature_2m,apparent_temperature,weather_code,wind_speed_10m,relative_humidity_2m",
-          daily: "weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max",
-          forecast_days: 7,
-          timezone: "auto",
-        },
-        timeout: 2500,
-        httpsAgent: keepAliveAgent,
+      const weather = await getWithRetry(WEATHER_URL, {
+        latitude: place.latitude,
+        longitude: place.longitude,
+        current: "temperature_2m,apparent_temperature,weather_code,wind_speed_10m,relative_humidity_2m",
+        daily: "weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max",
+        forecast_days: 7,
+        timezone: "auto",
       });
       const current = weather.data?.current;
       if (!current) return { error: "Could not fetch weather." };
@@ -179,7 +193,7 @@ function createOpenMeteoService(enabled, logger, { now } = {}) {
         today: dailyForecast(weather.data?.daily, 0),
         tomorrow: dailyForecast(weather.data?.daily, 1),
       };
-      return cache.set(cacheKey, result, 2 * 60 * 1000);
+      return cache.set(cacheKey, result, WEATHER_TTL_MS);
     } catch (err) {
       logger.warn({ err: err.message, city: placeName, country: effectiveCountry }, "Open-Meteo request failed");
       return { error: "Could not fetch weather." };

@@ -295,6 +295,21 @@ function isWeatherQuestion(text) {
     "llueve",
     "lloviendo",
     "mausam",
+    // Italian and Portuguese (live replay 2026-11-02: "Che tempo fa a Roma?" got invented weather);
+    // bare "tempo" is also "time / how long", so only weather phrases
+    "che tempo fa",
+    "meteo",
+    "previsioni",
+    "pioggia",
+    "piove",
+    "pioverà",
+    "come è il tempo",
+    "com'è il tempo",
+    "previsão do tempo",
+    "como está o tempo",
+    "chuva",
+    "chover",
+    "vai chover",
   ];
   return keywords.some((k) => hasPhrase(t, k));
 }

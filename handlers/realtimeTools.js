@@ -4,10 +4,16 @@
  * Every execute() resolves (never throws) and is capped by a per-tool deadline.
  */
 const { normalizeCountryCode, defaultCityForCountry } = require("../utils/placeResolve");
+const { roundRate } = require("../services/fx");
 
 const MAX_OUTPUT_CHARS = 2000;
 const DEADLINE_ERROR = "That lookup took too long. Please try again in a moment.";
 const FAILED_ERROR = "I couldn't get that right now. Please try again in a moment.";
+/**
+ * Per-tool time limit. 4 s: a cold weather lookup is two requests (~1.3 s) and a dated fare up to
+ * three; at 2.5 s a slow moment made Buddy say "I couldn't get that" (live replay 2026-11-02).
+ */
+const DEFAULT_TOOL_DEADLINE_MS = 4000;
 
 const TOOL_DEFS = {
   get_weather: {
@@ -59,7 +65,10 @@ const TOOL_DEFS = {
   },
   find_places: {
     description:
-      "Find places: hotels, restaurants/food, or local services (pharmacy, clinic, hospital, dentist). Requires a city or area. Say the short acknowledgement out loud before calling this, like every other tool. Results give names, addresses, and ratings only, plus priceLevel when known (INEXPENSIVE = budget, MODERATE = mid-range, EXPENSIVE, VERY_EXPENSIVE = luxury): never say a place is available, bookable, has rooms, or is open. For hotel price questions, also give a typical nightly price range for that city from general knowledge, say clearly it's typical prices, not live rates, and that Booking dot com or Expedia show exact prices for their dates.",
+      "Find places: hotels, restaurants/food, or local services (pharmacy, clinic, hospital, dentist). Requires a city or area. Say the short acknowledgement out loud before calling this, like every other tool. Results give names, addresses, and ratings only, plus priceLevel when known (INEXPENSIVE = budget, MODERATE = mid-range, EXPENSIVE, VERY_EXPENSIVE = luxury): never say a place is available, bookable, has rooms, or is open. " +
+      "For hotels, set tier to budget when they ask for cheap/affordable hotels or name a low nightly budget (about $150 or less), and luxury for luxury/5-star or a high budget. " +
+      "For hotel price questions, also give a typical nightly price range for that city from general knowledge (budget, mid-range, luxury), in US dollars unless they used another currency; if they gave a number of nights, also give the typical total for the stay; if they gave a month, say whether it's high or low season there. Say clearly these are typical prices, not live rates, and that Booking dot com or Expedia show exact prices for their dates. If they named a budget, say honestly whether it's realistic. " +
+      "Never give a price for a named hotel, and never call a named hotel budget, mid-range, expensive, or luxury unless its priceLevel says so or it came from a tier search for that tier.",
     parameters: {
       type: "object",
       properties: {
@@ -69,13 +78,18 @@ const TOOL_DEFS = {
           type: "string",
           description: "For local_service: what to find, e.g. pharmacy, urgent care",
         },
+        tier: {
+          type: "string",
+          enum: ["budget", "luxury"],
+          description: "Hotels only: budget or luxury when the caller asked for one. Omit otherwise.",
+        },
       },
       required: ["kind", "location"],
     },
   },
   get_flight_fare: {
     description:
-      "Get the cheapest recently seen airfare between two airports (recent fares, not a live booking quote). Convert city names to IATA airport codes yourself (Bogota→BOG, Miami→MIA, Madrid→MAD). If origin or destination is missing, ask the caller instead of calling. The fare is the cheapest across all airlines (it can't be filtered by airline): always say the airline by name (airlineName; never read the code, and leave it out if airlineName is empty), say round trip if returnAt is set or one-way if not, with dates, say the departDate (and returnDate) in the result; if match is near, other_dates, or month, say plainly those aren't their exact dates; without dates, say it's from recent fares rather than their exact dates; and if the caller asked for a specific airline and the result is a different one, say this fare is with that other airline, not theirs.",
+      "Get the cheapest recently seen airfare between two airports (recent fares, not a live booking quote). Convert city names to IATA airport codes yourself (Bogota→BOG, Miami→MIA, Madrid→MAD). If origin or destination is missing, ask the caller instead of calling. The fare is the cheapest across all airlines (it can't be filtered by airline): always say the airline by name (airlineName; never read the code, and leave it out if airlineName is empty), say round trip if returnAt is set or one-way if not, with dates, say the departDate (and returnDate) in the result; if match is near, other_dates, or month, say plainly those aren't their exact dates; if match is other_return, say you don't see fares returning on their return day (requestedReturn) and give the returnDate found; without dates, say it's from recent fares rather than their exact dates; and if the caller asked for a specific airline and the result is a different one, say this fare is with that other airline, not theirs.",
     parameters: {
       type: "object",
       properties: {
@@ -86,6 +100,10 @@ const TOOL_DEFS = {
           description: "Departure date the caller gave, YYYY-MM-DD (or YYYY-MM for just a month). Work it out from today's date. Omit if they gave none.",
         },
         return_date: { type: "string", description: "Return date YYYY-MM-DD, only for a round trip. Omit for one-way." },
+        one_way: {
+          type: "boolean",
+          description: "true if they said one-way (\"una sola vía\", \"solo ida\"), false if round trip; omit if they didn't say.",
+        },
       },
       required: ["origin", "destination"],
     },
@@ -294,8 +312,28 @@ function askForPlace(place) {
   };
 }
 
-function createToolExecutor({ services, logger, deadlineMs = 2500, now = () => Date.now() }) {
+function createToolExecutor({ services, logger, deadlineMs = DEFAULT_TOOL_DEADLINE_MS, now = () => Date.now() }) {
   const s = services;
+
+  /** Dated fare when the model gave a date, else the recent cheapest. */
+  function fareLookup(args) {
+    const origin = String(args.origin || "").toUpperCase();
+    const destination = String(args.destination || "").toUpperCase();
+    const dep = String(args.departure_date || "");
+    const ret = String(args.return_date || "");
+    if (/^\d{4}-\d{2}(-\d{2})?$/.test(dep) && s.travelService.fareForTrip) {
+      const exactDay = /^\d{4}-\d{2}-\d{2}$/.test(dep);
+      const returnDate = /^\d{4}-\d{2}-\d{2}$/.test(ret) ? ret : null;
+      return s.travelService.fareForTrip(origin, destination, {
+        departDate: exactDay ? dep : null,
+        returnDate,
+        departMonth: exactDay ? null : dep,
+        // Said one-way / round trip; unsaid (month search) may fall back to round trip
+        oneWay: typeof args.one_way === "boolean" ? args.one_way : returnDate ? false : exactDay ? true : null,
+      });
+    }
+    return s.travelService.cheapestRoute(origin, destination);
+  }
 
   const handlers = {
     async get_weather(args) {
@@ -336,37 +374,32 @@ function createToolExecutor({ services, logger, deadlineMs = 2500, now = () => D
       return s.newsService.topHeadlines(args.topic || "");
     },
 
-    get_exchange_rate(args) {
-      return s.fxService.getRate(
+    async get_exchange_rate(args) {
+      const result = await s.fxService.getRate(
         String(args.base || "").toUpperCase(),
         String(args.quote || "").toUpperCase()
       );
+      // Rounded for speech (the model read "3176.91" digit by digit), as the regex path says it
+      return result && !result.error && Number.isFinite(Number(result.rate)) ? { ...result, rate: roundRate(result.rate) } : result;
     },
 
     find_places(args) {
       const location = String(args.location || "").trim();
-      if (args.kind === "hotel") return s.placesService.searchHotels(location);
+      const tier = ["budget", "luxury"].includes(args.tier) ? args.tier : undefined;
+      if (args.kind === "hotel") return tier ? s.placesService.searchHotels(location, tier) : s.placesService.searchHotels(location);
       if (args.kind === "food") return s.placesService.searchFood(location);
       const what = String(args.query || "").trim() || "services";
       return s.placesService.searchText(location ? `${what} near ${location}` : what);
     },
 
-    get_flight_fare(args) {
-      const origin = String(args.origin || "").toUpperCase();
-      const destination = String(args.destination || "").toUpperCase();
-      const dep = String(args.departure_date || "");
-      const ret = String(args.return_date || "");
-      if (/^\d{4}-\d{2}(-\d{2})?$/.test(dep) && s.travelService.fareForTrip) {
-        const exactDay = /^\d{4}-\d{2}-\d{2}$/.test(dep);
-        const returnDate = /^\d{4}-\d{2}-\d{2}$/.test(ret) ? ret : null;
-        return s.travelService.fareForTrip(origin, destination, {
-          departDate: exactDay ? dep : null,
-          returnDate,
-          departMonth: exactDay ? null : dep,
-          oneWay: !returnDate,
-        });
+    async get_flight_fare(args) {
+      const result = await fareLookup(args);
+      // An airline code with no known name is left out (the model read "DM" aloud in a live replay)
+      if (result && !result.error && result.airline && !result.airlineName) {
+        const { airline, ...rest } = result;
+        return rest;
       }
-      return s.travelService.cheapestRoute(origin, destination);
+      return result;
     },
 
     get_flight_status(args) {
@@ -487,9 +520,10 @@ const TOOLS_SESSION_RULES = [
 const WEB_SEARCH_SESSION_RULE =
   "- If no other tool covers a live question, or the matching tool failed, call web_search once with a short English query. Answer only from its results and mention the source briefly.";
 
-function toolsTurnInstruction(langName) {
+/** now: today's date is given so "tomorrow", "next Monday", or "Sunday" become real dates for fares. */
+function toolsTurnInstruction(langName, { now = Date.now() } = {}) {
   return (
-    `Reply in ${langName} only. About 15–25 words. ` +
+    `Reply in ${langName} only. About 15–25 words. It is now ${formatUtcNow(now)}. ` +
     `If their latest request needs live data (weather, time, news, exchange rates, places, flight fares or status, sports scores, crypto, stocks, U.S. interest rates), ` +
     `first say one very short acknowledgement like "Let me check that." and then call the matching tool. Do this for every tool, including hotel, restaurant, and place searches. Never guess live numbers, and never state live facts (open or closed today, prices, schedules) without a tool result. ` +
     `If it needs a place they didn't name in this request and they aren't clearly continuing an earlier topic, ask which city first instead of calling a tool. ` +
@@ -532,7 +566,7 @@ function parseRouterMode(value) {
 
 function parseToolDeadlineMs(value) {
   const n = Number(value);
-  return Number.isFinite(n) && n > 0 ? n : 2500;
+  return Number.isFinite(n) && n > 0 ? n : DEFAULT_TOOL_DEADLINE_MS;
 }
 
 /** Regex router intent → the tool the model should pick (null = no tool). Logging only. */

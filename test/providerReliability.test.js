@@ -54,13 +54,40 @@ function meteoHandler(url) {
     assert.ok(keepAliveAgent.options.timeout >= 30000, "idle sockets kept at least 30 s");
   });
 
+  await check("weather: one timeout or 5xx is retried once; a 4xx is not", async () => {
+    // Live replay: a single network hiccup became "I couldn't get the weather"
+    requests = [];
+    let forecastCalls = 0;
+    getHandler = (url) => {
+      if (url.includes("forecast") && ++forecastCalls === 1) throw timeoutError();
+      return meteoHandler(url);
+    };
+    const r = await createOpenMeteoService(true, logger).getByCity("Bogota", "CO");
+    assert.strictEqual(r.temp, 14);
+    assert.strictEqual(forecastCalls, 2);
+    assert.ok(requests.every((q) => q.opts.timeout <= 1800), "short attempts");
+    let geoCalls = 0;
+    getHandler = (url) => {
+      if (url.includes("geocoding")) {
+        geoCalls += 1;
+        throw httpError(400);
+      }
+      return meteoHandler(url);
+    };
+    const bad = await createOpenMeteoService(true, logger).getByCity("Nowhere", "CO");
+    assert.ok(bad.error && geoCalls === 1, `no retry on 4xx (${geoCalls})`);
+  });
+
   await check("weather: repeat city skips the geocoding request (coordinates cached a day)", async () => {
     let t = 0;
     requests = [];
     getHandler = meteoHandler;
     const svc = createOpenMeteoService(true, logger, { now: () => t });
     assert.strictEqual((await svc.getByCity("Bogota", "CO")).temp, 14);
-    t = 5 * 60 * 1000; // weather cache (2 min) expired, coordinates still cached
+    t = 5 * 60 * 1000; // within the 10-minute weather cache: no new request at all
+    await svc.getByCity("Bogota", "CO");
+    assert.strictEqual(requests.length, 2, "weather reused for 10 minutes");
+    t = 15 * 60 * 1000; // weather cache expired, coordinates still cached
     assert.strictEqual((await svc.getByCity("Bogota", "CO")).temp, 14);
     const geo = requests.filter((r) => r.url.includes("geocoding")).length;
     const forecast = requests.filter((r) => r.url.includes("forecast")).length;

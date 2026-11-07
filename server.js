@@ -79,6 +79,8 @@ function buildServer() {
 
   const server = http.createServer(app);
   const wss = new WebSocket.Server({ server, path: "/media-stream" });
+  /** callSids with a live media stream (graceful shutdown). */
+  const activeCalls = new Set();
   const weatherService = createWeatherService(config.openweather.apiKey, logger);
   const openMeteoService = createOpenMeteoService(config.openMeteo.enabled, logger);
   const timeService = createTimeService();
@@ -121,23 +123,59 @@ function buildServer() {
     latencyMetricsEnabled: config.latencyMetricsEnabled,
     routerMode: config.routerMode,
     toolDeadlineMs: config.toolDeadlineMs,
+    realtime: config.realtime,
+    activeCalls,
   });
 
   wss.on("connection", (ws, req) => {
     handleMediaStream(ws, req);
   });
 
+  server.activeCalls = activeCalls;
   return server;
+}
+
+/**
+ * Redeploys: let live calls finish (up to SHUTDOWN_GRACE_SECONDS), then exit. HTTP stays open
+ * meanwhile so each call's /call-status request (transcript email, usage sync) still arrives.
+ * The host's own stop timeout must be at least this long for calls to finish.
+ */
+function shutdownGracefully(server, signal) {
+  const pending = server.activeCalls?.size || 0;
+  logger.info({ signal, activeCalls: pending, graceSeconds: config.shutdownGraceSeconds }, "Shutting down");
+  const deadline = Date.now() + config.shutdownGraceSeconds * 1000;
+  let idleSince = pending ? 0 : Date.now();
+  const timer = setInterval(() => {
+    const left = server.activeCalls?.size || 0;
+    if (left) idleSince = 0;
+    else if (!idleSince) idleSince = Date.now();
+    // Idle for 3 s: the last call's status request has had time to arrive
+    const done = !left && Date.now() - idleSince >= 3000;
+    if (done || Date.now() >= deadline) {
+      clearInterval(timer);
+      logger.info({ activeCalls: left }, left ? "Shutdown: grace period over" : "Shutdown: all calls finished");
+      process.exit(0);
+    }
+  }, 500);
 }
 
 if (require.main === module) {
   const server = buildServer();
   server.listen(config.port, () => {
     logger.info(
-      { port: config.port, streaming: true, routerMode: config.routerMode },
+      {
+        port: config.port,
+        streaming: true,
+        routerMode: config.routerMode,
+        realtimeModel: config.realtime.model || "gpt-realtime",
+        transcribeModel: config.realtime.transcribeModel || "gpt-transcribe",
+      },
       "AI phone assistant server is running"
     );
   });
+  for (const signal of ["SIGTERM", "SIGINT"]) {
+    process.once(signal, () => shutdownGracefully(server, signal));
+  }
 }
 
 module.exports = buildServer;

@@ -7,7 +7,7 @@ const assert = require("assert");
 const { EventEmitter } = require("events");
 const WebSocket = require("ws");
 const createMediaStreamHandler = require("../handlers/mediaStream");
-const { CallStore } = require("../utils/callStore");
+const { CallStore, SYSTEM_PROMPT } = require("../utils/callStore");
 const createTimeService = require("../services/time");
 const { parseTravelDates, spokenDate } = require("../utils/travelDates");
 
@@ -141,7 +141,7 @@ function stubServices({ weatherDelayMs = 0, webSearch = false, fxError = false, 
 }
 
 /** Starts a call against a fake Realtime server; greeting already completed. */
-async function startCall({ routerMode, weatherDelayMs, webSearch, fxError, ratesError, flights, places, travel, logs, session, twilioClient = null, timeWarningSeconds } = {}) {
+async function startCall({ routerMode, weatherDelayMs, webSearch, fxError, ratesError, flights, places, travel, logs, session, twilioClient = null, timeWarningSeconds, realtime } = {}) {
   const server = new WebSocket.Server({ port: 0 });
   await new Promise((r) => server.on("listening", r));
   const received = [];
@@ -166,6 +166,7 @@ async function startCall({ routerMode, weatherDelayMs, webSearch, fxError, rates
     routerMode,
     toolDeadlineMs: 1000,
     ...(timeWarningSeconds ? { timeWarningSeconds } : {}),
+    ...(realtime ? { realtime } : {}),
     realtimeUrl: `ws://127.0.0.1:${server.address().port}`,
   });
   const twilio = new FakeTwilio();
@@ -173,11 +174,20 @@ async function startCall({ routerMode, weatherDelayMs, webSearch, fxError, rates
   twilio.emit("message", JSON.stringify({ event: "start", start: { callSid: "CAtest", streamSid: "MZtest" } }));
 
   let respSeq = 0;
+  const TURN_MARK = "## This reply (authoritative — follow these for this reply)\n";
+  // Each reply's instructions are the call prompt + the turn's own rules; tests check the turn part
+  const turnView = (m) => {
+    const ins = m.response?.instructions;
+    if (typeof ins !== "string" || !ins.includes(TURN_MARK)) return m;
+    return { ...m, response: { ...m.response, instructions: ins.slice(ins.indexOf(TURN_MARK) + TURN_MARK.length), fullInstructions: ins } };
+  };
   const call = {
     received,
     calls,
     callStore,
-    creates: () => received.filter((m) => m.type === "response.create"),
+    twilio,
+    serverSocket: () => sock,
+    creates: () => received.filter((m) => m.type === "response.create").map(turnView),
     emit: (ev) => sock.send(JSON.stringify(ev)),
     async completeLast(output = []) {
       const create = call.creates().at(-1);
@@ -555,7 +565,7 @@ const weatherCall = (callId, args) => ({
     await c.say("Is this call free?");
     await waitFor(() => c.creates().length === 2);
     const r = c.creates()[1].response;
-    assert.ok(/^Say the following in English only/.test(r.instructions), r.instructions);
+    assert.ok(/^Say only the quoted text, word for word/.test(r.instructions), r.instructions);
     assert.ok(/buddycallai dot com/.test(r.instructions));
     assert.deepStrictEqual(r.tools, []);
     c.close();
@@ -567,7 +577,7 @@ const weatherCall = (callId, args) => ({
       await c.say("can you please let me know the buddy call AI packages");
       await waitFor(() => c.creates().length === 2);
       const r = c.creates()[1].response;
-      assert.ok(/^Say the following in English only/.test(r.instructions), r.instructions);
+      assert.ok(/^Say only the quoted text, word for word/.test(r.instructions), r.instructions);
       assert.ok(/Silver/.test(r.instructions) && /69 dollars/.test(r.instructions), r.instructions);
       assert.deepStrictEqual(r.tools, []);
       c.close();
@@ -580,7 +590,7 @@ const weatherCall = (callId, args) => ({
     await waitFor(() => c.creates().length === 2);
     const r = c.creates()[1].response;
     assert.ok(!/15 to 20 words/.test(r.instructions), r.instructions);
-    assert.ok(/every name and number/i.test(r.instructions), r.instructions);
+    assert.ok(/word for word/i.test(r.instructions), r.instructions);
     c.close();
   });
 
@@ -590,14 +600,15 @@ const weatherCall = (callId, args) => ({
       await c.say("Do you speak Spanish?");
       await waitFor(() => c.creates().length === 2);
       const offer = c.creates()[1].response;
-      assert.ok(/^Say the following in English only/.test(offer.instructions), offer.instructions);
+      assert.ok(/^Say only the quoted text, word for word/.test(offer.instructions), offer.instructions);
       assert.ok(/Would you like me to switch to Spanish/.test(offer.instructions), offer.instructions);
       assert.deepStrictEqual(offer.tools, []);
       await c.completeLast([]);
       await c.say("Yes");
       await waitFor(() => c.creates().length === 3);
       const switched = c.creates()[2].response;
-      assert.ok(/^Say the following in Spanish only/.test(switched.instructions), switched.instructions);
+      // Fixed reply in the new language: translated in full, nothing shortened
+      assert.ok(/^Say this in Spanish and nothing else, translating it fully/.test(switched.instructions), switched.instructions);
       c.close();
     });
   }
@@ -608,7 +619,7 @@ const weatherCall = (callId, args) => ({
       await c.say("Who created you?");
       await waitFor(() => c.creates().length === 2);
       const r = c.creates()[1].response;
-      assert.ok(/^Say the following in English only/.test(r.instructions), r.instructions);
+      assert.ok(/^Say only the quoted text, word for word/.test(r.instructions), r.instructions);
       assert.ok(/I was created by Brash3D Media Group\./.test(r.instructions), r.instructions);
       assert.deepStrictEqual(r.tools, []);
       c.close();
@@ -938,6 +949,191 @@ const weatherCall = (callId, args) => ({
     await waitFor(() => c.creates().some((m) => /time for this call is up/i.test(m.response.instructions)), 3000);
     const up = c.creates().find((m) => /time for this call is up/i.test(m.response.instructions));
     assert.ok(/^Say exactly this and nothing else: Your time for this call is up/.test(up.response.instructions), up.response.instructions);
+    c.close();
+  });
+
+  await check("session: μ-law straight through, gpt-transcribe with name hints, no optional extras by default", async () => {
+    const c = await startCall({ routerMode: "regex" });
+    const s = c.received.find((m) => m.type === "session.update").session;
+    assert.deepStrictEqual(s.audio.input.format, { type: "audio/pcmu" });
+    assert.deepStrictEqual(s.audio.output.format, { type: "audio/pcmu" });
+    assert.strictEqual(s.audio.input.transcription.model, "gpt-transcribe");
+    assert.ok(/Brash3D/.test(s.audio.input.transcription.prompt) && /Medellín/.test(s.audio.input.transcription.prompt));
+    assert.deepStrictEqual(s.audio.input.noise_reduction, { type: "far_field" });
+    assert.strictEqual(s.audio.output.voice, "marin");
+    for (const k of ["reasoning", "max_output_tokens", "truncation"]) assert.ok(!(k in s), `${k} not sent by default`);
+    // Caller audio goes to OpenAI unchanged; Buddy's audio goes to Twilio unchanged
+    c.twilio.emit("message", JSON.stringify({ event: "media", media: { track: "inbound", payload: "//79/A==" } }));
+    await sleep(20);
+    assert.strictEqual(c.received.filter((m) => m.type === "input_audio_buffer.append").at(-1).audio, "//79/A==");
+    await c.say("Tell me a joke");
+    await waitFor(() => c.creates().length === 2);
+    const gen = c.creates()[1].response.metadata.client_gen;
+    c.emit({ type: "response.created", response: { id: "respA", metadata: { client_gen: gen } } });
+    await sleep(10);
+    c.emit({ type: "response.output_audio.delta", response_id: "respA", delta: "f39/fw==" });
+    await sleep(20);
+    assert.strictEqual(c.twilio.sent.filter((m) => m.event === "media").at(-1).media.payload, "f39/fw==");
+    c.close();
+  });
+
+  await check("session: .env settings apply (PCM 24k conversion, reasoning effort, reply cap, truncation, noise, no hints)", async () => {
+    const c = await startCall({
+      routerMode: "regex",
+      realtime: { model: "gpt-realtime-2.1", audioFormat: "pcm24", reasoningEffort: "low", maxOutputTokens: 900, truncationTokens: 8000, noiseReduction: "near_field", transcribeHints: false, voice: "cedar" },
+    });
+    const s = c.received.find((m) => m.type === "session.update").session;
+    assert.deepStrictEqual(s.audio.input.format, { type: "audio/pcm", rate: 24000 });
+    assert.deepStrictEqual(s.reasoning, { effort: "low" });
+    assert.strictEqual(s.max_output_tokens, 900);
+    assert.deepStrictEqual(s.truncation, { type: "retention_ratio", retention_ratio: 0.8, token_limits: { post_instructions: 8000 } });
+    assert.deepStrictEqual(s.audio.input.noise_reduction, { type: "near_field" });
+    assert.ok(!("prompt" in s.audio.input.transcription));
+    assert.strictEqual(s.audio.output.voice, "cedar");
+    // μ-law from Twilio is converted to 24 kHz PCM (3 samples per byte, 2 bytes each)
+    c.twilio.emit("message", JSON.stringify({ event: "media", media: { track: "inbound", payload: "//79/A==" } }));
+    await sleep(20);
+    assert.strictEqual(Buffer.from(c.received.filter((m) => m.type === "input_audio_buffer.append").at(-1).audio, "base64").length, 24);
+    c.close();
+  });
+
+  await check("reasoning effort is not sent to gpt-realtime (it rejects the option)", async () => {
+    const c = await startCall({ routerMode: "regex", realtime: { model: "gpt-realtime", reasoningEffort: "low" } });
+    assert.ok(!("reasoning" in c.received.find((m) => m.type === "session.update").session));
+    c.close();
+  });
+
+  await check("every in-conversation reply carries the call prompt; greeting and time messages stand alone", async () => {
+    // Live check 2026-11-02: reply instructions replace the session prompt, so it must be included
+    const twilioClient = { calls: () => ({ update: async () => {} }) };
+    const c = await startCall({ routerMode: "regex", session: { maxBillableSeconds: 1 }, twilioClient });
+    await c.say("Tell me a joke");
+    await waitFor(() => c.creates().some((m) => /time for this call is up/i.test(m.response.instructions)), 3000);
+    const all = c.received.filter((m) => m.type === "response.create");
+    assert.ok(/^Say exactly: Hi! I'm Buddy/.test(all[0].response.instructions), "greeting alone");
+    const chat = c.creates().find((m) => /^Reply in English only/.test(m.response.instructions));
+    assert.ok(chat.response.fullInstructions.startsWith(SYSTEM_PROMPT), "chat reply starts with the call prompt");
+    assert.ok(/## Active call rules/.test(chat.response.fullInstructions));
+    const up = all.find((m) => /time for this call is up/i.test(m.response.instructions));
+    assert.ok(!up.response.instructions.includes(SYSTEM_PROMPT), "time-up alone");
+    c.close();
+  });
+
+  await check("tools mode: turns carry the call prompt plus the tools rules", async () => {
+    const c = await startCall({ routerMode: "tools" });
+    await c.say("What's the weather in Miami?");
+    await waitFor(() => c.creates().length === 2);
+    const full = c.creates()[1].response.fullInstructions;
+    assert.ok(full.startsWith(SYSTEM_PROMPT) && /Live data tools/.test(full), full.slice(0, 80));
+    c.close();
+  });
+
+  await check("'active response' error: the reply is sent again once the old one ends (not lost)", async () => {
+    const logs = [];
+    const c = await startCall({ routerMode: "regex", logs });
+    await c.say("Tell me a joke");
+    await waitFor(() => c.creates().length === 2);
+    const before = c.received.filter((m) => m.type === "response.create").length;
+    c.emit({ type: "error", error: { code: "conversation_already_has_active_response", message: "busy" } });
+    await sleep(20);
+    c.emit({ type: "response.done", response: { id: "old", status: "cancelled" } });
+    await waitFor(() => c.received.filter((m) => m.type === "response.create").length === before + 1);
+    const resent = c.received.filter((m) => m.type === "response.create").at(-1);
+    assert.deepStrictEqual(resent, c.received.filter((m) => m.type === "response.create")[before - 1], "same reply sent again");
+    assert.ok(logs.some(([, msg]) => msg === "Queued reply sent"));
+    c.close();
+  });
+
+  await check("'active response' error after the caller spoke again: the old reply is not resent", async () => {
+    const c = await startCall({ routerMode: "regex" });
+    await c.say("Tell me a joke");
+    await waitFor(() => c.creates().length === 2);
+    c.emit({ type: "error", error: { code: "conversation_already_has_active_response", message: "busy" } });
+    await sleep(10);
+    c.emit({ type: "input_audio_buffer.speech_started", item_id: "x" });
+    await sleep(10);
+    c.emit({ type: "response.done", response: { id: "old", status: "cancelled" } });
+    await sleep(1700);
+    assert.strictEqual(c.creates().length, 2);
+    c.close();
+  });
+
+  await check("call usage: tokens and an estimated cost are logged once when the call ends", async () => {
+    const logs = [];
+    const c = await startCall({ routerMode: "regex", logs });
+    c.emit({
+      type: "response.done",
+      response: {
+        id: "u1",
+        status: "completed",
+        usage: {
+          input_token_details: { text_tokens: 1000, audio_tokens: 200, cached_tokens_details: { text_tokens: 800, audio_tokens: 0 } },
+          output_token_details: { text_tokens: 20, audio_tokens: 100 },
+        },
+      },
+    });
+    await sleep(20);
+    c.close();
+    await sleep(20);
+    const lines = logs.filter(([f]) => f?.metric === "call_usage");
+    assert.strictEqual(lines.length, 1);
+    const u = lines[0][0];
+    assert.deepStrictEqual([u.textIn, u.cachedText, u.audioIn, u.textOut, u.audioOut], [200, 800, 200, 20, 100]);
+    assert.ok(u.estUsd > 0 && u.model === "gpt-realtime" && u.transcribeModel === "gpt-transcribe", JSON.stringify(u));
+  });
+
+  await check("OpenAI connection lost mid-call: the caller hears an apology and the call ends", async () => {
+    const updates = [];
+    const twilioClient = { calls: (sid) => ({ update: async (u) => updates.push([sid, u]) }) };
+    const c = await startCall({ routerMode: "regex", twilioClient });
+    c.serverSocket().close();
+    await waitFor(() => updates.length === 1);
+    assert.strictEqual(updates[0][0], "CAtest");
+    assert.ok(/<Say>Sorry, I lost my connection/.test(updates[0][1].twiml) && /<Hangup\/>/.test(updates[0][1].twiml));
+    c.close();
+    // A normal hang-up does not trigger it
+    const updates2 = [];
+    const c2 = await startCall({ routerMode: "regex", twilioClient: { calls: () => ({ update: async (u) => updates2.push(u) }) } });
+    c2.close();
+    await sleep(50);
+    assert.strictEqual(updates2.length, 0);
+  });
+
+  await check("'Hi Buddy,' then the question: only the question is answered (no small talk over it)", async () => {
+    const logs = [];
+    const c = await startCall({ routerMode: "regex", logs });
+    await c.say("Hi buddy.", "itemGreet");
+    await sleep(300);
+    c.emit({ type: "input_audio_buffer.speech_started", item_id: "itemQ" });
+    await c.say("What's the weather in Bogota?", "itemQ");
+    await waitFor(() => c.creates().length === 2);
+    await sleep(1400);
+    assert.strictEqual(c.creates().length, 2, "one reply only");
+    assert.ok(/Bogota|foggy/.test(c.creates()[1].response.instructions), c.creates()[1].response.instructions);
+    assert.ok(logs.some(([, m]) => m === "Greeting not answered: the caller kept talking"));
+    // Both lines stay in the emailed transcript
+    const lines = c.callStore.get("CAtest").transcriptLines;
+    assert.ok(lines.includes("Caller: Hi buddy.") && lines.includes("Caller: What's the weather in Bogota?"), lines.join(" | "));
+    c.close();
+  });
+
+  await check("a greeting on its own is still answered, after a short pause", async () => {
+    const c = await startCall({ routerMode: "regex" });
+    const t0 = Date.now();
+    await c.say("Hello?");
+    await waitFor(() => c.creates().length === 2, 3000);
+    assert.ok(Date.now() - t0 >= 1100, "waited for the caller to go on");
+    assert.ok(/^Reply in English only/.test(c.creates()[1].response.instructions));
+    c.close();
+  });
+
+  await check("greeting detection: greetings only, not questions", async () => {
+    // Exercised through the handler: a question is answered at once
+    const c = await startCall({ routerMode: "regex" });
+    const t0 = Date.now();
+    await c.say("Hi, can you tell me a joke?");
+    await waitFor(() => c.creates().length === 2, 3000);
+    assert.ok(Date.now() - t0 < 900, "no greeting pause for a real question");
     c.close();
   });
 

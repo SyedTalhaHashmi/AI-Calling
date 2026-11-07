@@ -15,7 +15,7 @@ function wordToIso(token) {
     .replace(/[?.!,;:]+$/g, "");
   if (!raw) return null;
   if (isCurrencyCode(raw)) return raw.toUpperCase();
-  if (/\b(us\s*)?dollar(s)?\b|\busd\b|\$\b/.test(raw)) return "USD";
+  if (/\b(us\s*)?dollar(s)?\b|\bd[oó]lar(es)?\b|\busd\b|\$\b/.test(raw)) return "USD";
   if (/\beuro?s?\b|\beur\b/.test(raw)) return "EUR";
   if (/\bpound(s)?\b|\bgbp\b|\bsterling\b/.test(raw)) return "GBP";
   if (/\bmexican\s*peso(s)?\b|\bmxn\b/.test(raw)) return "MXN";
@@ -51,7 +51,50 @@ function parsePairFromUtterance(text) {
     const quote = wordToIso(toMatches[i][2]);
     if (base && quote) return { base, quote };
   }
+  // "How many Colombian pesos is one U.S. dollar?" / "¿Cuántos pesos es un dólar?" — rate of the second
+  // in the first (live replay 2026-11-02: answered "Please share both currencies")
+  m = t.match(
+    /\b(?:how\s+many|cu[aá]ntos)\s+(.+?)\s+(?:is|are|for|per|equals?|makes?|es|son|vale|por|hay\s+en)\s+(?:a|an|one|1|un|uno)?\s*(.+?)(?:\s+(?:today|now|right now|hoy|ahora))?\s*[?.!]*\s*$/i
+  );
+  if (m) {
+    const quote = wordToIso(m[1]);
+    const base = wordToIso(m[2]);
+    if (base && quote && base !== quote) return { base, quote };
+  }
   return { base: null, quote: null };
+}
+
+/**
+ * A rate rounded for speech: 3176.91 → 3177, 0.9234 → 0.92, 0.000315 → 0.0003150. Live replay
+ * 2026-11-02: "One USD equals 3176.9100 COP" / "three thousand one hundred seventy-six point nine one".
+ */
+function roundRate(rate) {
+  const r = Number(rate);
+  if (!Number.isFinite(r)) return rate;
+  if (Math.abs(r) >= 100) return Math.round(r);
+  if (Math.abs(r) >= 1) return Math.round(r * 100) / 100;
+  return Number(r.toPrecision(4));
+}
+
+const currencyNames = new Intl.DisplayNames(["en"], { type: "currency" });
+const PLURAL_NAMES = { USD: "US dollars", EUR: "euros", GBP: "British pounds", COP: "Colombian pesos", MXN: "Mexican pesos", CLP: "Chilean pesos", BRL: "Brazilian reais", INR: "Indian rupees", PKR: "Pakistani rupees", CAD: "Canadian dollars", AUD: "Australian dollars" };
+const SINGULAR_NAMES = { USD: "US dollar", EUR: "euro", GBP: "British pound", COP: "Colombian peso", MXN: "Mexican peso" };
+
+function currencyName(code, plural) {
+  const c = String(code || "").toUpperCase();
+  const known = plural ? PLURAL_NAMES[c] : SINGULAR_NAMES[c];
+  if (known) return known;
+  try {
+    return currencyNames.of(c) || c;
+  } catch {
+    return c;
+  }
+}
+
+/** "One US dollar is about 3,177 Colombian pesos." */
+function spokenRate(result) {
+  const n = roundRate(result.rate);
+  return `One ${currencyName(result.base, false)} is about ${Number(n).toLocaleString("en-US", { maximumFractionDigits: 6 })} ${currencyName(result.quote, true)}.`;
 }
 
 /** Timeouts, dropped connections and 5xx are worth one retry; a 4xx (bad pair) is not. */
@@ -74,7 +117,7 @@ function createFxService(enabled, logger) {
   async function getRate(base, quote) {
     const from = String(base || "").toUpperCase();
     const to = String(quote || "").toUpperCase();
-    if (!from || !to) return { error: "Please share both currencies, like USD to PKR." };
+    if (!from || !to) return { error: "Which two currencies? For example, dollars to Colombian pesos." };
 
     const cacheKey = `fx:${from}:${to}`;
     const cached = cache.get(cacheKey);
@@ -111,3 +154,5 @@ function createFxService(enabled, logger) {
 }
 
 module.exports = createFxService;
+module.exports.roundRate = roundRate;
+module.exports.spokenRate = spokenRate;

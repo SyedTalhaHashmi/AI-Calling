@@ -232,7 +232,8 @@ check("flight on-time and delay questions are flight status, not time or chat", 
 check("'Real Madrid' is not the Brazilian real", () => {
   // Not a currency; and the sports lookup only has live scores, so schedule asks go to chat
   assert.strictEqual(resolveIntent("When is the next Real Madrid match?"), "chat");
-  assert.strictEqual(resolveIntent("Is Real Madrid playing today?"), "chat");
+  // Live question with no sports-schedule lookup: web search (chat when search is off)
+  assert.strictEqual(resolveIntent("Is Real Madrid playing today?"), "web_search");
   assert.strictEqual(resolveIntent("How much is the Brazilian real in dollars?"), "fx");
   assert.strictEqual(resolveIntent("Convert 100 reais to dollars"), "fx");
 });
@@ -241,18 +242,19 @@ check("upcoming-game questions are chat; live scores stay sports", () => {
   for (const text of [
     "When is the next Lakers game?",
     "When does Barcelona play their next match?",
-    "What's the soccer schedule this weekend?",
     "Is there an upcoming NFL game on Sunday?",
   ]) {
     assert.strictEqual(resolveIntent(text), "chat", text);
   }
+  assert.strictEqual(resolveIntent("What's the soccer schedule this weekend?"), "web_search");
   assert.strictEqual(resolveIntent("What's the score of the Lakers game?"), "sports");
   assert.strictEqual(resolveIntent("Who won the game last night?"), "sports");
   assert.strictEqual(resolveIntent("live football scores"), "sports");
 });
 
 check("stock market hours are a schedule question (chat), not a ticker lookup", () => {
-  assert.strictEqual(resolveIntent("Is the stock market open today?"), "chat");
+  // Web search (the handler adds the market clock); chat when search is off
+  assert.strictEqual(resolveIntent("Is the stock market open today?"), "web_search");
   assert.strictEqual(resolveIntent("When does the stock market close?"), "chat");
   assert.strictEqual(resolveIntent("What is Apple stock at?"), "stocks");
 });

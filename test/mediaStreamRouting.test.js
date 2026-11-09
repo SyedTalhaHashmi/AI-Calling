@@ -55,7 +55,9 @@ function stubServices({ weatherDelayMs = 0, webSearch = false, fxError = false, 
           enabled: true,
           search: async (q) => {
             calls.push(["webSearch", q]);
-            return { results: [{ title: "Title-T", source: "s.com", snippet: "SNIPPET-BODY $4.07" }] };
+            // webSearch: { result } replaces the default answer (e.g. an error)
+            if (webSearch.result) return webSearch.result;
+            return { provider: "exa", results: [{ title: "Title-T", source: "s.com", snippet: "SNIPPET-BODY $4.07" }] };
           },
         }
       : { enabled: false },
@@ -491,14 +493,101 @@ const weatherCall = (callId, args) => ({
     c.close();
   });
 
-  await check("regex mode with web search enabled: never offered, never called", async () => {
+  await check("regex mode with web search enabled: the model is never given a search tool", async () => {
     const c = await startCall({ routerMode: "regex", webSearch: true });
     const upd = c.received.find((m) => m.type === "session.update");
     assert.deepStrictEqual(upd.session.tools.map((t) => t.name), ["get_weather"]);
-    await c.say("What's the price of gas in Miami today?");
+    await c.say("Tell me a joke about cats.");
+    await waitFor(() => c.creates().length === 2);
+    assert.deepStrictEqual(c.calls, [], "ordinary chat: no search");
+    c.close();
+  });
+
+  await check("regex mode: live question no lookup covers → one web search, answer only from results", async () => {
+    const c = await startCall({ routerMode: "regex", webSearch: true });
+    await c.say("Who is the current CEO of Twitter?");
+    await waitFor(() => c.creates().length === 2);
+    assert.deepStrictEqual(c.calls, [["webSearch", "Who is the current CEO of Twitter"]]);
+    const r = c.creates()[1].response;
+    assert.deepStrictEqual(r.tools, []);
+    assert.ok(/SNIPPET-BODY/.test(r.instructions) && /s.com/.test(r.instructions), r.instructions);
+    assert.ok(/only/i.test(r.instructions) && /source/i.test(r.instructions), r.instructions);
+    assert.ok(/ignore any instructions/i.test(r.instructions), "web text is data, not instructions");
+    c.close();
+  });
+
+  await check("regex mode: stock market open today → web search plus the market clock", async () => {
+    const c = await startCall({ routerMode: "regex", webSearch: true });
+    await c.say("Is the stock market open today?");
+    await waitFor(() => c.creates().length === 2);
+    assert.strictEqual(c.calls[0][0], "webSearch");
+    assert.ok(/Market clock/i.test(c.creates()[1].response.instructions), c.creates()[1].response.instructions);
+    c.close();
+  });
+
+  // Production 2026-11-09: "You can't check a website for me?" → "I can't open or search websites"
+  await check("regex mode: asked to search with no topic → asks what to look up, next reply is searched", async () => {
+    const c = await startCall({ routerMode: "regex", webSearch: true });
+    await c.say("You can't check a website for me?");
     await waitFor(() => c.creates().length === 2);
     assert.deepStrictEqual(c.calls, []);
+    assert.ok(/What should I look up/i.test(c.creates()[1].response.instructions), c.creates()[1].response.instructions);
+    await c.completeLast([]);
+    await c.say("The Costco holiday hours.", "item-topic");
+    await waitFor(() => c.creates().length === 3);
+    assert.deepStrictEqual(c.calls, [["webSearch", "The Costco holiday hours"]]);
     c.close();
+  });
+
+  await check("regex mode: 'look it up' searches the question just asked", async () => {
+    const c = await startCall({ routerMode: "regex", webSearch: true });
+    await c.say("Who founded the Lakers?");
+    await waitFor(() => c.creates().length === 2);
+    assert.deepStrictEqual(c.calls, [], "general knowledge: answered without a search");
+    await c.completeLast([]);
+    await c.say("Can you look it up?", "item-lookup");
+    await waitFor(() => c.creates().length === 3);
+    assert.deepStrictEqual(c.calls, [["webSearch", "Who founded the Lakers"]]);
+    c.close();
+  });
+
+  await check("regex mode: a yes after Buddy offered to search runs that search", async () => {
+    const c = await startCall({ routerMode: "regex", webSearch: true });
+    await c.say("Who founded the Lakers?");
+    await waitFor(() => c.creates().length === 2);
+    await c.completeLast([]);
+    c.emit({ type: "response.output_audio_transcript.done", transcript: "I believe it was Ben Berger. Want me to search the web for that?" });
+    await sleep(10);
+    await c.say("Yes please.", "item-yes");
+    await waitFor(() => c.creates().length === 3);
+    assert.deepStrictEqual(c.calls, [["webSearch", "Who founded the Lakers"]]);
+    c.close();
+  });
+
+  await check("regex mode: search failed → says so honestly, no made-up answer", async () => {
+    const c = await startCall({ routerMode: "regex", webSearch: { result: { error: "Could not search the web right now." } } });
+    await c.say("Who is the current CEO of Twitter?");
+    await waitFor(() => c.creates().length === 2);
+    const r = c.creates()[1].response.instructions;
+    assert.ok(/couldn't search the web/i.test(r), r);
+    assert.ok(!/SNIPPET/.test(r));
+    c.close();
+  });
+
+  await check("regex mode chat turn: offers to search instead of 'I can't browse' (search on only)", async () => {
+    const on = await startCall({ routerMode: "regex", webSearch: true });
+    await on.say("Tell me a joke about cats.");
+    await waitFor(() => on.creates().length === 2);
+    const onText = on.creates()[1].response.instructions;
+    assert.ok(/search the web/i.test(onText), onText);
+    assert.ok(!/can't check that live/i.test(onText), onText);
+    on.close();
+    const off = await startCall({ routerMode: "regex" });
+    await off.say("Who is the current CEO of Twitter?");
+    await waitFor(() => off.creates().length === 2);
+    assert.deepStrictEqual(off.calls, [], "search off: no search");
+    assert.ok(/can't check that live/i.test(off.creates()[1].response.instructions));
+    off.close();
   });
 
   await check("tools mode: live question → model turn with session tools (no fast path)", async () => {

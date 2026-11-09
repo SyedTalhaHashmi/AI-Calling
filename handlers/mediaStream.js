@@ -64,8 +64,24 @@ const {
   WEB_SEARCH_SESSION_RULE,
   toolsTurnInstruction,
   toolsFollowUpInstruction,
+  webSearchAnswerInstruction,
+  MARKET_STATUS_QUERY,
   toolChoiceAgreement,
 } = require("./realtimeTools");
+const { detectWebSearch, offeredSearch, isSearchConfirmation } = require("../utils/webSearchIntent");
+
+/** A reply to "What should I look up?" that drops the search instead of naming a topic. */
+const NOT_A_SEARCH_TOPIC = /^\W*(?:no|nope|never ?mind|forget it|nothing|that's all|it's fine|no thanks)\b/i;
+
+function cleanSearchText(text) {
+  return String(text || "").replace(/\s+/g, " ").replace(/^[\s,.:;!?-]+|[\s,.:;!?-]+$/g, "").trim();
+}
+
+/** The caller's question from the turn just before this one ("look it up" / "yes" refers to it). */
+function recentChatAsk(session) {
+  const ask = session?.lastChatAsk;
+  return ask && (session.callerTurns || 0) - ask.turn <= 1 ? ask.text : null;
+}
 
 /** Defaults for the OpenAI Realtime session; config.realtime (from .env) overrides each one. */
 const REALTIME_DEFAULTS = {
@@ -298,6 +314,11 @@ const OUT_OF_BAND = { conversation: "none", input: [] };
  * Fast-path replies are the whole answer. In a production call the model said "Let me find the
  * prices… please hold on" over a hotel list, then went silent — nothing runs after this reply.
  */
+/** Chat turns (regex mode): what to say about live facts, with and without web search. */
+const CHAT_LIVE_NOTE_NO_SEARCH =
+  "Never state live or changing facts (whether a place or airport is open today, current prices, schedules, today's events): say you can't check that live right now and suggest where to check. If you cannot complete an action (browse, open links, transfer), still help with a clear website or search tip plus what you can do next. Don't say you'll check or look anything up, and don't ask them to hold on: nothing runs after this reply.";
+const CHAT_LIVE_NOTE_SEARCH =
+  "You can search the web for them: never say you can't browse, search, or get live or current information. Never state live or changing facts (whether a place or airport is open today, current prices, schedules, today's events) from memory: say you're not sure it's current and ask if they'd like you to search the web for it. If you cannot complete an action (open links, transfer, book), still help with a clear website tip plus what you can do next. Don't say you're checking now and don't ask them to hold on: nothing runs after this reply unless they say yes.";
 const NO_PROMISE_NOTE = "don't say you'll check or look anything up, and don't ask them to hold on";
 
 function createMediaStreamHandler({
@@ -315,7 +336,7 @@ function createMediaStreamHandler({
   sportsService,
   flightsService,
   stocksService,
-  /** Tools mode only (never offered or called by the regex router). */
+  /** Web search: the web_search tool in tools mode; run by our code in regex mode (never a model tool). */
   webSearchService,
   twilioClient,
   latencyMetricsEnabled = true,
@@ -995,6 +1016,8 @@ function createMediaStreamHandler({
             const awaiting = sessionRef?.awaiting || null;
             if (sessionRef) sessionRef.awaiting = null;
             let intent = resolveIntent(trimmed);
+            /** Set when the query isn't this turn's own words (a topic after "What should I look up?", or a yes). */
+            let webQuery = null;
             if (awaitingTimeCity && intent === "chat" && timeService?.resolvePlace(trimmed)) {
               intent = "time";
             }
@@ -1007,6 +1030,12 @@ function createMediaStreamHandler({
                 if (r.origin !== awaiting.origin || r.destination !== awaiting.destination || hasDates) intent = "travel_price";
               } else if (awaiting.kind === "weather") {
                 if (shortPlaceReply(trimmed, { maxWords: 5 })) intent = "weather";
+              } else if (awaiting.kind === "web_search") {
+                // The topic after "What should I look up?"
+                if (!NOT_A_SEARCH_TOPIC.test(trimmed)) {
+                  intent = "web_search";
+                  webQuery = cleanSearchText(trimmed);
+                }
               } else if (extractLocation(trimmed) || shortPlaceReply(trimmed)) {
                 intent = awaiting.kind;
               }
@@ -1019,6 +1048,12 @@ function createMediaStreamHandler({
               sessionRef?.lastFareTurn === sessionRef?.callerTurns - 1
             ) {
               intent = "travel_price";
+            }
+            // "Yes" right after Buddy offered to search the question just asked
+            const lastAsk = recentChatAsk(sessionRef);
+            if (intent === "chat" && webSearchService?.enabled && lastAsk && isSearchConfirmation(trimmed) && offeredSearch(lastAiReply.text)) {
+              intent = "web_search";
+              webQuery = lastAsk;
             }
             logger.info({ callSid, intent }, "Intent resolved");
             metrics.setRoute(turnId, "fast_path", intent);
@@ -1330,6 +1365,42 @@ function createMediaStreamHandler({
               })();
               return;
             }
+            if (intent === "web_search" && webSearchService?.enabled) {
+              const found = webQuery ? { query: webQuery } : detectWebSearch(trimmed);
+              // "Look it up" with no topic: the question they just asked
+              const query = found?.query || recentChatAsk(sessionRef);
+              if (!query) {
+                if (sessionRef) sessionRef.awaiting = { kind: "web_search" };
+                sendReply("Sure, I can search the web. What should I look up?", { exact: true });
+                return;
+              }
+              (async () => {
+                const result = await timed("web_search", () => webSearchService.search(query));
+                if (result.error || !result.results?.length) {
+                  logger.info({ callSid, query, err: result.error }, "Web search: no answer");
+                  sendReply(
+                    /limit/i.test(result.error || "")
+                      ? "I can't search the web any more today. A quick Google search will have it."
+                      : "I couldn't search the web for that right now. A quick Google search should have it.",
+                    { multilingual: true }
+                  );
+                  return;
+                }
+                // Query and sources only — no third-party snippet text in the logs
+                logger.info({ callSid, query, provider: result.provider, sources: result.results.map((r) => r.source) }, "Web search");
+                const langName = languageLabel(sessionRef?.replyLanguage || "en");
+                sendModelTurn(
+                  webSearchAnswerInstruction(langName, {
+                    question: trimmed,
+                    results: result.results,
+                    withMarketClock: MARKET_STATUS_QUERY.test(query),
+                  }) + SENSITIVE_TURN_NOTE,
+                  turnId,
+                  "Web search answer"
+                );
+              })();
+              return;
+            }
             if (intent === "stocks" && stocksService?.enabled) {
               (async () => {
                 try {
@@ -1345,6 +1416,8 @@ function createMediaStreamHandler({
               return;
             }
             metrics.setRoute(turnId, "chat");
+            // "Look it up" / "yes" next turn searches this question
+            if (sessionRef) sessionRef.lastChatAsk = { text: cleanSearchText(trimmed), turn: sessionRef.callerTurns || 0 };
             if (openaiWs?.readyState === WebSocket.OPEN) {
               if (responseInProgress) {
                 logger.info({ callSid }, "Skip general reply: response already in progress");
@@ -1358,7 +1431,7 @@ function createMediaStreamHandler({
                 JSON.stringify(
                   createResponsePayload(
                     {
-                      instructions: `Reply in ${langName} only. About 15–25 words. Answer from general knowledge when you can (like ChatGPT). Never state live or changing facts (whether a place or airport is open today, current prices, schedules, today's events): say you can't check that live right now and suggest where to check. If you cannot complete an action (browse, open links, transfer), still help with a clear website or search tip plus what you can do next. Answer only their latest request. Don't say you'll check or look anything up, and don't ask them to hold on: nothing runs after this reply.${SENSITIVE_TURN_NOTE}${billingTurnNote(callStore.get(callSid))}`,
+                      instructions: `Reply in ${langName} only. About 15–25 words. Answer from general knowledge when you can (like ChatGPT). ${webSearchService?.enabled ? CHAT_LIVE_NOTE_SEARCH : CHAT_LIVE_NOTE_NO_SEARCH} Answer only their latest request.${SENSITIVE_TURN_NOTE}${billingTurnNote(callStore.get(callSid))}`,
                       tools: [],
                     },
                     turnId

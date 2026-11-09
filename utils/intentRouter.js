@@ -10,6 +10,7 @@ const {
   defaultCityForCountry,
 } = require("./placeResolve");
 const { isCurrencyCode } = require("./currencyCodes");
+const { detectWebSearch } = require("./webSearchIntent");
 
 /** Common English words that look like IATA but must never be used as airports. */
 const IATA_STOPWORDS = new Set(
@@ -429,6 +430,8 @@ function resolveIntent(text) {
   if (isCryptoQuestion(t)) return "crypto";
   if (isRatesQuestion(t)) return "rates";
   if (isStockQuestion(t)) return "stocks";
+  // Asked to search, or a live question none of the lookups above covers
+  if (detectWebSearch(t)) return "web_search";
   return "chat";
 }
 

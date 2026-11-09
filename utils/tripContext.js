@@ -41,14 +41,17 @@ function completeRoute(text, pending) {
 
 const NOT_A_PLACE = /\b(no|nope|never ?mind|forget it|nothing|thanks|thank you|okay|ok|yes|yeah|what|why|how|who|tell|help)\b/i;
 
-/** "Miami." / "In Fort Myers, please" after "Which city?" → the place; anything longer is a new request. */
-function shortPlaceReply(text) {
+/**
+ * "Miami." / "In Fort Myers, please" after "Which city?" → the place; anything longer is a new request.
+ * maxWords 5 lets "Far Rockaway, New York" through for the weather.
+ */
+function shortPlaceReply(text, { maxWords = 3 } = {}) {
   const cleaned = String(text || "")
     .replace(/[.?!,]/g, " ")
     .replace(/\b(please|in|at|near|the city of)\b/gi, " ")
     .replace(/\s+/g, " ")
     .trim();
-  if (!cleaned || cleaned.split(" ").length > 3 || NOT_A_PLACE.test(cleaned)) return null;
+  if (!cleaned || cleaned.split(" ").length > maxWords || NOT_A_PLACE.test(cleaned)) return null;
   return cleaned;
 }
 

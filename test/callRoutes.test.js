@@ -32,6 +32,8 @@ function closeServer(s) {
 async function startRoutes({ callerCheck = async () => ({ skipped: true }) } = {}) {
   const emails = [];
   const callEnds = [];
+  const callStarts = [];
+  let checks = 0;
   const callStore = new CallStore();
   const app = express();
   app.use(express.urlencoded({ extended: false }));
@@ -44,8 +46,11 @@ async function startRoutes({ callerCheck = async () => ({ skipped: true }) } = {
         email: { sendTranscript: async (args) => emails.push(args) },
         platformApi: {
           enabled: false,
-          callerCheck,
-          notifyCallStart: async () => {},
+          callerCheck: async (args) => {
+            checks += 1;
+            return callerCheck(args);
+          },
+          notifyCallStart: async (args) => callStarts.push(args),
           notifyCallEnd: async (args) => callEnds.push(args),
         },
       },
@@ -61,7 +66,7 @@ async function startRoutes({ callerCheck = async () => ({ skipped: true }) } = {
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
       body: new URLSearchParams(body).toString(),
     }).then((r) => r.text());
-  return { emails, callEnds, callStore, post, close: () => closeServer(server) };
+  return { emails, callEnds, callStarts, checks: () => checks, callStore, post, close: () => closeServer(server) };
 }
 
 (async () => {
@@ -111,6 +116,22 @@ async function startRoutes({ callerCheck = async () => ({ skipped: true }) } = {
     t.callStore.get("CA4").transcriptLines = ["Caller: Hi"];
     await t.post("/call-status", { CallSid: "CA4", CallStatus: "completed", CallDuration: "20" });
     assert.strictEqual(t.emails[0].to, "user@example.test");
+    t.close();
+  });
+
+  // Production 2026-11-08: Twilio sent "no-answer" during the 5 s ring, then the ring ended and the
+  // call was "started" anyway: platform told a call began that never ended, and the session was never removed
+  await check("caller hangs up while it is still ringing: not connected, nothing reported, no session left", async () => {
+    const t = await startRoutes();
+    await t.post("/call-status", { CallSid: "CA5", CallStatus: "no-answer" });
+    const twiml = await t.post("/incoming-call", { CallSid: "CA5", From: "+15550001111", To: "+15550002222" });
+    assert.ok(!/<Stream/.test(twiml), twiml);
+    assert.strictEqual(t.callStore.get("CA5"), undefined, "no session");
+    assert.strictEqual(t.callStarts.length, 0, "no call-start report");
+    assert.strictEqual(t.checks(), 0, "no caller check");
+    // A different call still connects normally
+    const ok = await t.post("/incoming-call", { CallSid: "CA6", From: "+15550001111" });
+    assert.ok(/<Stream/.test(ok), ok);
     t.close();
   });
 

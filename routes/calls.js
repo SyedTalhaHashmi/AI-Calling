@@ -45,6 +45,12 @@ function createCallRoutes({ logger, callStore, services, config }) {
         logger.info({ callSid, ringDelaySeconds: ringDelay }, "Ringing before connect");
         await new Promise((r) => setTimeout(r, ringDelay * 1000));
       }
+      // Hung up while it was still ringing: Twilio already sent the final status, so don't start the call
+      if (callStore.takeEndedEarly(callSid)) {
+        logger.info({ callSid }, "Caller hung up before connect");
+        twiml.hangup();
+        return res.type("text/xml").send(twiml.toString());
+      }
       const session = callStore.getOrCreate(callSid);
       session.callerNumber = req.body.From || null;
       session.calledNumber = req.body.To || null;
@@ -133,6 +139,7 @@ function createCallRoutes({ logger, callStore, services, config }) {
     }
 
     const session = callStore.markEnded(callSid);
+    if (!session) callStore.markEndedEarly(callSid);
     if (!session || session.emailed) {
       return res.status(200).send("ok");
     }

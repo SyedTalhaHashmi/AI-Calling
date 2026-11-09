@@ -23,6 +23,21 @@ const SYSTEM_PROMPT =
 class CallStore {
   constructor() {
     this.sessions = new Map();
+    /** Calls that ended before /incoming-call finished (caller hung up during the ring delay): sid → time. */
+    this.endedEarly = new Map();
+  }
+
+  /** A terminal status arrived with no session yet; remembered 10 minutes. */
+  markEndedEarly(callSid, now = Date.now()) {
+    for (const [sid, at] of this.endedEarly) {
+      if (now - at > 10 * 60 * 1000) this.endedEarly.delete(sid);
+    }
+    this.endedEarly.set(callSid, now);
+  }
+
+  /** True once if the call already ended before it was connected. */
+  takeEndedEarly(callSid) {
+    return this.endedEarly.delete(callSid);
   }
 
   getOrCreate(callSid) {

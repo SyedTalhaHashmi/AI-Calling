@@ -1165,6 +1165,37 @@ const weatherCall = (callId, args) => ({
     c.close();
   });
 
+  await check("echo: the caller repeating a greeting ('Hey buddy. Hey buddy.') is not mistaken for Buddy's voice", async () => {
+    // Production 2026-11-08: four words, but only two different ones, all in Buddy's last reply
+    const c = await startCall({ routerMode: "regex" });
+    c.emit({ type: "response.output_audio_transcript.done", transcript: "Hey! I'm Buddy. If you send me pictures," });
+    await sleep(20);
+    await c.say("Hey buddy. Hey buddy.");
+    await waitFor(() => c.creates().length === 2, 3000);
+    c.close();
+  });
+
+  await check("weather with no city: asks which city, and the next reply ('Far Rockaway, New York.') gets the weather", async () => {
+    // Production 2026-11-08: "Please share a city or country name.", then the city was treated as chat
+    // and Buddy said it couldn't check the weather
+    const c = await startCall({ routerMode: "regex" });
+    const r = await ask(c, "What's the weather outside today?");
+    assert.ok(/Which city should I check the weather for\?/.test(r), r);
+    assert.strictEqual(c.calls.length, 0, "no lookup without a city");
+    await c.say("Far Rockaway, New York.");
+    await waitFor(() => c.calls.length === 1);
+    assert.deepStrictEqual(c.calls[0].slice(0, 2), ["weather", "Far Rockaway, New York"]);
+    c.close();
+  });
+
+  await check("weather follow-up: a new question after 'Which city?' is not taken as the city", async () => {
+    const c = await startCall({ routerMode: "regex" });
+    await ask(c, "What's the weather like?");
+    const r = await ask(c, "Never mind, tell me a joke.");
+    assert.strictEqual(c.calls.length, 0, r);
+    c.close();
+  });
+
   console.log(`\n${process.exitCode ? "Some checks failed" : `All ${passed} checks passed`}`);
   process.exit(process.exitCode || 0);
 })();

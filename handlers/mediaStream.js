@@ -167,11 +167,11 @@ const echoWords = (s) =>
 
 /**
  * The caller's phone playing Buddy back (speakerphone): production 2026-10-30 transcribed the greeting
- * as "Hi, I'm Bunny, your AI..." and Buddy answered itself. Four or more words, nearly all from
- * what Buddy just said.
+ * as "Hi, I'm Bunny, your AI..." and Buddy answered itself. Four or more different words, nearly all
+ * from what Buddy just said ("Hey buddy. Hey buddy." is two words repeated, not an echo).
  */
 function isEchoOfReply(text, reply) {
-  const said = echoWords(text);
+  const said = [...new Set(echoWords(text))];
   if (said.length < 4) return false;
   const heard = new Set(echoWords(reply));
   return said.filter((w) => heard.has(w)).length / said.length >= 0.75;
@@ -1005,6 +1005,8 @@ function createMediaStreamHandler({
               if (awaiting.kind === "fare") {
                 const r = completeRoute(trimmed, awaiting);
                 if (r.origin !== awaiting.origin || r.destination !== awaiting.destination || hasDates) intent = "travel_price";
+              } else if (awaiting.kind === "weather") {
+                if (shortPlaceReply(trimmed, { maxWords: 5 })) intent = "weather";
               } else if (extractLocation(trimmed) || shortPlaceReply(trimmed)) {
                 intent = awaiting.kind;
               }
@@ -1039,7 +1041,15 @@ function createMediaStreamHandler({
               (weatherService?.enabled || openMeteoService?.enabled)
             ) {
               const sessionRef = callStore.get(callSid);
-              const places = extractCityAndCountry(trimmed, sessionRef?.placeHint);
+              // A bare place answering "Which city?" ("Far Rockaway, New York.") is read as "weather in …"
+              const placeText = awaiting?.kind === "weather" ? `weather in ${trimmed}` : trimmed;
+              const places = extractCityAndCountry(placeText, sessionRef?.placeHint);
+              // No city anywhere ("What's the weather outside today?"): ask, and take the next reply as the place
+              if (!places.some((p) => (p.city && !/^unknown$/i.test(p.city)) || p.country)) {
+                if (sessionRef) sessionRef.awaiting = { kind: "weather" };
+                sendReply("Which city should I check the weather for?", { multilingual: true });
+                return;
+              }
               (async () => {
                 try {
                   // All places at once; facts keep the spoken order

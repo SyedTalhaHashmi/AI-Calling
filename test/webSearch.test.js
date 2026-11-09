@@ -167,6 +167,96 @@ function fresh(opts = {}) {
     assert.ok(posts[0].body.query.length <= 200);
   });
 
+  // Tavily backup: used only when Exa can't serve the search (no key, daily cap, HTTP error)
+  const tavilyReply = { data: { results: [{ title: "Gas today", url: "https://www.aaa.com/gas", content: "Florida average is $3.09." }] } };
+  /** Exa and Tavily answer differently; a function reply decides per URL. */
+  function byUrl({ exa = sample, tavily = tavilyReply } = {}) {
+    return () => {
+      const url = posts[posts.length - 1].url;
+      const r = url.includes("tavily") ? tavily : exa;
+      if (r instanceof Error) throw r;
+      return r;
+    };
+  }
+  const httpError = (status) => Object.assign(new Error(`Request failed with status code ${status}`), { response: { status } });
+  const both = (opts = {}) => {
+    posts = [];
+    return createWebSearchService({ exaApiKey: "exa-key", tavilyApiKey: "tav-key", enabled: true, logger, ...opts });
+  };
+
+  await check("Exa answers first; Tavily isn't called when Exa works", async () => {
+    const svc = both();
+    reply = byUrl();
+    const r = await svc.search("gas price Miami");
+    assert.strictEqual(posts.length, 1);
+    assert.strictEqual(posts[0].url, "https://api.exa.ai/search");
+    assert.strictEqual(r.provider, "exa");
+  });
+
+  await check("Exa daily cap used up → Tavily answers (one basic search, 3 results, key in header)", async () => {
+    const svc = both({ dailyLimit: 1 });
+    reply = byUrl();
+    await svc.search("q1");
+    const r = await svc.search("q2");
+    assert.strictEqual(posts.length, 2);
+    const { url, body, opts } = posts[1];
+    assert.strictEqual(url, "https://api.tavily.com/search");
+    assert.strictEqual(body.query, "q2");
+    assert.strictEqual(body.search_depth, "basic");
+    assert.strictEqual(body.max_results, 3);
+    assert.strictEqual(opts.headers.Authorization, "Bearer tav-key");
+    assert.ok(opts.timeout <= 2000);
+    assert.strictEqual(r.provider, "tavily");
+    assert.deepStrictEqual(r.results[0], { title: "Gas today", source: "aaa.com", published: undefined, snippet: "Florida average is $3.09." });
+  });
+
+  await check("Exa HTTP error (out of credit, rate limit, server error) → Tavily answers", async () => {
+    for (const status of [402, 429, 500]) {
+      const svc = both();
+      reply = byUrl({ exa: httpError(status) });
+      const r = await svc.search(`question ${status}`);
+      assert.strictEqual(r.provider, "tavily", `status ${status}`);
+      assert.strictEqual(posts.length, 2);
+    }
+  });
+
+  await check("Exa timeout → no Tavily (the caller would wait for two searches)", async () => {
+    const svc = both();
+    reply = byUrl({ exa: Object.assign(new Error("timeout of 1500ms exceeded"), { code: "ECONNABORTED" }) });
+    const r = await svc.search("slow one");
+    assert.ok(r.error);
+    assert.strictEqual(posts.length, 1);
+  });
+
+  await check("only a Tavily key → Tavily is the search", async () => {
+    posts = [];
+    const svc = createWebSearchService({ tavilyApiKey: "tav-key", enabled: true, logger });
+    reply = byUrl();
+    assert.strictEqual(svc.enabled, true);
+    const r = await svc.search("gas price");
+    assert.strictEqual(posts[0].url, "https://api.tavily.com/search");
+    assert.strictEqual(r.provider, "tavily");
+  });
+
+  await check("Tavily has its own daily cap; both used up → limit error, no request", async () => {
+    const svc = both({ dailyLimit: 1, tavilyDailyLimit: 1 });
+    reply = byUrl();
+    await svc.search("a");
+    await svc.search("b");
+    const third = await svc.search("c");
+    assert.strictEqual(posts.length, 2);
+    assert.ok(/limit/i.test(third.error), third.error);
+  });
+
+  await check("both fail → one { error }, never throws; still off without WEB_SEARCH_ENABLED", async () => {
+    const svc = both();
+    reply = byUrl({ exa: httpError(500), tavily: httpError(500) });
+    const r = await svc.search("x");
+    assert.ok(r.error && !r.results);
+    const off = createWebSearchService({ exaApiKey: "k", tavilyApiKey: "k", logger });
+    assert.strictEqual(off.enabled, false);
+  });
+
   await check("parseWebSearchDailyLimit: positive whole number, else default 40", async () => {
     assert.strictEqual(parseWebSearchDailyLimit("100"), 100);
     assert.strictEqual(parseWebSearchDailyLimit(undefined), 40);

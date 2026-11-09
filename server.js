@@ -98,9 +98,11 @@ function buildServer() {
   const flightsService = createFlightsService(config.aviationstack.apiKey, logger);
   const stocksService = createStocksService(config.alphavantage.apiKey, logger);
   const webSearchService = createWebSearchService({
-    apiKey: config.webSearch.exaApiKey,
+    exaApiKey: config.webSearch.exaApiKey,
+    tavilyApiKey: config.webSearch.tavilyApiKey,
     enabled: config.webSearch.enabled,
     dailyLimit: config.webSearch.dailyLimit,
+    tavilyDailyLimit: config.webSearch.tavilyDailyLimit,
     logger,
   });
   const handleMediaStream = createMediaStreamHandler({

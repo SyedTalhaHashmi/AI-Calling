@@ -8,6 +8,7 @@ const { twilioToOpenAI, openAIToTwilio } = require("../services/audioConvert");
 const { SYSTEM_PROMPT } = require("../utils/callStore");
 const { emptyUsage, addResponseUsage, estimateCost } = require("../utils/realtimeCost");
 const { spokenRate } = require("../services/fx");
+const { createToolGate, toolLimitKey, labelLimitKey } = require("../services/toolGate");
 const {
   findCountryInText,
   normalizeCountryCode,
@@ -351,6 +352,8 @@ function createMediaStreamHandler({
   timeWarningSeconds = 15,
   /** Shared count of live calls (graceful shutdown waits for it to reach zero). */
   activeCalls = null,
+  /** Platform API: plan and monthly limit check before paid lookups (services/toolGate.js). */
+  platformApi = null,
 }) {
   const rt = { ...REALTIME_DEFAULTS, ...Object.fromEntries(Object.entries(realtime).filter(([, v]) => v !== undefined)) };
   const openaiUrl = realtimeUrl || `wss://api.openai.com/v1/realtime?model=${encodeURIComponent(rt.model)}`;
@@ -423,6 +426,8 @@ function createMediaStreamHandler({
     let retryAfterActiveEnds = null;
     /** Token usage for the call (cost log at the end). */
     const usage = emptyUsage();
+    /** Plan / limit check before paid lookups; set when the stream starts. */
+    let toolGate = null;
     let callStartedAt = 0;
     let callClosed = false;
     let speechStartedAt = 0;
@@ -510,6 +515,8 @@ function createMediaStreamHandler({
       (async () => {
         const outputs = await runToolCalls(calls, toolExecutor, {
           timed: (label, fn) => metrics.time(metricsTurnId, label, fn),
+          // Plan and monthly limit first; a refusal is the tool's answer, said to the caller
+          gate: toolGate ? (name, args) => toolGate.check(toolLimitKey(name, args), name) : null,
           // A city from an earlier request is not searched unless the caller is continuing that topic
           guard: (name, args) => {
             const place = carriedOverPlace(name, args, {
@@ -627,7 +634,11 @@ function createMediaStreamHandler({
         callSid = msg.start?.callSid || msg.callSid;
         streamSid = msg.start?.streamSid || msg.streamSid;
         metrics.setCallSid(callSid);
-        callStore.getOrCreate(callSid);
+        const startSession = callStore.getOrCreate(callSid);
+        // The call-end report adds the AI cost from these counts
+        startSession.usage = usage;
+        startSession.costModels = { model: rt.model, transcribeModel: rt.transcribeModel };
+        toolGate = createToolGate({ platformApi, session: startSession, callSid, logger });
         callStartedAt = Date.now();
         if (activeCalls && callSid) activeCalls.add(callSid);
         // The greeting reaches the transcript from its spoken audio, like every other reply
@@ -852,8 +863,30 @@ function createMediaStreamHandler({
           /** held: re-entered after the greeting pause (logging, transcript, and counters already done). */
           function handleUserTranscript(text, turnId, { held = false } = {}) {
             // Metrics helpers bound to this turn (pass results through unchanged)
-            const sendReply = (reply, opts = {}) => sendReplyBase(reply, { ...opts, turnId });
-            const timed = (label, fn) => metrics.time(turnId, label, fn);
+            // A plan-limit refusal is said in full, in the caller's language
+            let deniedSay = null;
+            const sendReply = (reply, opts = {}) =>
+              sendReplyBase(reply, { ...opts, turnId, ...(deniedSay && reply === deniedSay ? { exact: true } : {}) });
+            // Paid lookups ask the plan first (one unit each); a failed lookup gives the unit back
+            const timed = (label, fn) =>
+              metrics.time(turnId, label, async () => {
+                const key = labelLimitKey(label);
+                if (!key || !toolGate) return fn();
+                const g = await toolGate.check(key, label);
+                if (!g.ok) {
+                  deniedSay = g.say;
+                  return { error: g.say, planLimit: true };
+                }
+                let result;
+                try {
+                  result = await fn();
+                } catch (err) {
+                  g.done({ error: err.message });
+                  throw err;
+                }
+                g.done(result);
+                return result;
+              });
             // Fare for the caller's dates when they gave any, else the recent cheapest (any dates)
             const lookupFare = (origin, destination, d) =>
               d && (d.departDate || d.departMonth || d.window)
@@ -1093,6 +1126,11 @@ function createMediaStreamHandler({
                       fetchWeatherForPlace(place, openMeteoService, weatherService)
                     )
                   );
+                  const refused = results.find((r) => r?.planLimit);
+                  if (refused) {
+                    sendReply(refused.error);
+                    return;
+                  }
                   const facts = [];
                   // A rain / forecast question also gets today's (or tomorrow's) forecast
                   const forecast = weatherForecastDay(trimmed);
@@ -1222,6 +1260,11 @@ function createMediaStreamHandler({
                     ? timed("places_hotels", () => placesService.searchHotels(city, hotelTier(trimmed) || undefined))
                     : timed("places_food", () => placesService.searchFood(city)),
                 ]);
+                const refused = [result, fare].find((r) => r?.planLimit);
+                if (refused) {
+                  sendReply(refused.error);
+                  return;
+                }
                 // Price asks (and trip asks) get a typical nightly range next to the real hotels
                 if (priceAsked || fare) {
                   const langName = languageLabel(callStore.get(callSid)?.replyLanguage || "en");

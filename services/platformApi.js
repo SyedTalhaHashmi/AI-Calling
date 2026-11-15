@@ -38,13 +38,20 @@ function createPlatformApi(config, logger) {
           config.platform?.usageOutboxPath ||
           path.join(process.cwd(), "data", "usage-outbox.json"),
         logger,
-        send: (kind, payload) =>
-          post(
+        send: (kind, payload) => {
+          if (kind === "call-end") {
+            return post("/api/v1/integrations/voice/call-end", payload, { "x-integration-secret": integrationSecret }, 15000);
+          }
+          if (kind === "tool-record" || kind === "tool-release") {
+            return post("/api/v1/integrations/voice/tool-use", payload, { "x-integration-secret": integrationSecret }, 10000);
+          }
+          return post(
             kind === "trial" ? "/api/v1/usage/trial-report" : "/api/v1/usage/report",
             payload,
             { "x-usage-secret": usageSecret },
             10000
-          ),
+          );
+        },
       })
     : null;
   if (outbox) outbox.start();
@@ -95,13 +102,33 @@ function createPlatformApi(config, logger) {
         8000
       );
     },
+    /** End of call (length, transcript, language, AI cost): through the outbox, applied once by call id. */
     notifyCallEnd(payload) {
+      if (outbox) return outbox.enqueue("call-end", payload, payload?.callSid ? `callend:${payload.callSid}` : undefined);
       return post(
         "/api/v1/integrations/voice/call-end",
         payload,
         { "x-integration-secret": integrationSecret },
         10000
       );
+    },
+    /** Live-tool permission (reserve). Answers { ok, data } or { ok: false } — the caller decides on fail-open. */
+    async toolUse(payload) {
+      if (!enabled) return { ok: false, skipped: true };
+      try {
+        const { data } = await http.post("/api/v1/integrations/voice/tool-use", payload, {
+          headers: { "x-integration-secret": integrationSecret },
+          timeout: 3000,
+        });
+        return { ok: true, data };
+      } catch (err) {
+        return { ok: false, error: err.message, status: err.response?.status };
+      }
+    },
+    /** A tool use counted after the fact, or a unit given back: through the outbox. */
+    queueToolReport(kind, payload) {
+      if (!outbox) return;
+      outbox.enqueue(kind, payload, `${kind}:${payload.key}`).catch(() => {});
     },
     reportUsage(payload) {
       if (outbox) return outbox.enqueue("usage", payload, payload?.callSid ? `usage:${payload.callSid}` : undefined);

@@ -143,7 +143,7 @@ function stubServices({ weatherDelayMs = 0, webSearch = false, fxError = false, 
 }
 
 /** Starts a call against a fake Realtime server; greeting already completed. */
-async function startCall({ routerMode, weatherDelayMs, webSearch, fxError, ratesError, flights, places, travel, logs, session, twilioClient = null, timeWarningSeconds, realtime } = {}) {
+async function startCall({ routerMode, weatherDelayMs, webSearch, fxError, ratesError, flights, places, travel, logs, session, twilioClient = null, timeWarningSeconds, realtime, platformApi = null } = {}) {
   const server = new WebSocket.Server({ port: 0 });
   await new Promise((r) => server.on("listening", r));
   const received = [];
@@ -170,6 +170,7 @@ async function startCall({ routerMode, weatherDelayMs, webSearch, fxError, rates
     ...(timeWarningSeconds ? { timeWarningSeconds } : {}),
     ...(realtime ? { realtime } : {}),
     realtimeUrl: `ws://127.0.0.1:${server.address().port}`,
+    platformApi,
   });
   const twilio = new FakeTwilio();
   handler(twilio, {});
@@ -245,6 +246,60 @@ const weatherCall = (callId, args) => ({
     assert.ok(/BTC is about/.test(r.instructions));
     assert.deepStrictEqual(r.tools, []);
     assert.deepStrictEqual(c.calls, [["crypto", "What's the price of bitcoin?"]]);
+    c.close();
+  });
+
+  // Plan limits (phase 4): a fake platform that answers the tool check
+  const fakePlatform = (data) => {
+    const sent = [];
+    const queued = [];
+    return { sent, queued, enabled: true, toolUse: async (p) => (sent.push(p), { ok: true, data }), queueToolReport: (k, p) => queued.push([k, p]) };
+  };
+
+  await check("regex mode: Basic plan asks weather: told it isn't included, no lookup", async () => {
+    const api = fakePlatform({ allowed: true });
+    const c = await startCall({ routerMode: "regex", platformApi: api, session: { platformUserId: "u1", billingMode: "subscriber_platinum", toolAccess: { mode: "none", limits: {} } } });
+    await c.say("What's the weather in Bogota?");
+    await waitFor(() => c.creates().length === 2);
+    const ins = c.creates()[1].response.instructions;
+    assert.ok(/isn't included in your plan/.test(ins), ins);
+    assert.deepStrictEqual(c.calls, [], "weather API not called");
+    c.close();
+  });
+
+  await check("regex mode: Plus at its weather limit: told the count and reset date, no lookup", async () => {
+    const api = fakePlatform({ allowed: false, reason: "limit_reached", limit: 50, resetsAt: "2026-12-10T00:00:00.000Z", canUpgrade: true });
+    const c = await startCall({ routerMode: "regex", platformApi: api, session: { platformUserId: "u1", billingMode: "subscriber_platinum", toolAccess: { mode: "limited", limits: { weather: 50 } } } });
+    await c.say("What's the weather in Bogota?");
+    await waitFor(() => c.creates().length === 2);
+    const ins = c.creates()[1].response.instructions;
+    assert.ok(/all 50 weather checks/.test(ins) && /December 10/.test(ins), ins);
+    assert.strictEqual(api.sent[0].tool, "weather");
+    assert.deepStrictEqual(c.calls, []);
+    c.close();
+  });
+
+  await check("regex mode: Plus with units left: weather answered as before", async () => {
+    const api = fakePlatform({ allowed: true, limit: 50, used: 4 });
+    const c = await startCall({ routerMode: "regex", platformApi: api, session: { platformUserId: "u1", billingMode: "subscriber_platinum", toolAccess: { mode: "limited", limits: { weather: 50 } } } });
+    await c.say("What's the weather in Bogota?");
+    await waitFor(() => c.creates().length === 2);
+    assert.ok(/18 degrees Celsius and foggy/.test(c.creates()[1].response.instructions));
+    assert.strictEqual(api.sent.length, 1);
+    assert.deepStrictEqual(api.queued, [], "nothing given back");
+    c.close();
+  });
+
+  await check("tools mode: a refused tool returns the refusal to the model, the service isn't called", async () => {
+    const api = fakePlatform({ allowed: false, reason: "not_in_plan", canUpgrade: true });
+    const c = await startCall({ routerMode: "tools", platformApi: api, session: { platformUserId: "u1", billingMode: "subscriber_platinum", toolAccess: { mode: "check", limits: {} } } });
+    await c.say("What's the weather in Bogota?");
+    await waitFor(() => c.creates().length === 2);
+    await c.completeLast([weatherCall("w1", { city: "Bogota" })]);
+    await waitFor(() => c.received.some((m) => m.type === "conversation.item.create" && m.item?.call_id === "w1"));
+    const out = c.received.find((m) => m.type === "conversation.item.create" && m.item?.call_id === "w1");
+    assert.ok(/isn't included in your plan/.test(out.item.output), out.item.output);
+    assert.deepStrictEqual(c.calls, []);
     c.close();
   });
 

@@ -127,6 +127,7 @@ function buildServer() {
     toolDeadlineMs: config.toolDeadlineMs,
     realtime: config.realtime,
     activeCalls,
+    platformApi: services.platformApi,
   });
 
   wss.on("connection", (ws, req) => {

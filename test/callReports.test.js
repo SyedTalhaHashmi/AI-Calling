@@ -25,6 +25,7 @@ const silent = { info() {}, warn() {}, error() {} };
 async function start(callerCheck) {
   const usage = [];
   const trials = [];
+  const ends = [];
   const callStore = new CallStore();
   const app = express();
   app.use(express.urlencoded({ extended: false }));
@@ -39,7 +40,7 @@ async function start(callerCheck) {
           enabled: true,
           callerCheck: async () => callerCheck,
           notifyCallStart: async () => ({ ok: true }),
-          notifyCallEnd: async () => ({ ok: true }),
+          notifyCallEnd: async (p) => (ends.push(p), { ok: true }),
           reportUsage: async (p) => (usage.push(p), { ok: true }),
           trialReport: async (p) => (trials.push(p), { ok: true }),
         },
@@ -59,7 +60,7 @@ async function start(callerCheck) {
     server.closeAllConnections();
     server.close();
   };
-  return { usage, trials, callStore, post, close };
+  return { usage, trials, ends, callStore, post, close };
 }
 
 (async () => {
@@ -96,6 +97,46 @@ async function start(callerCheck) {
     await t.post("/call-status", { CallSid: "CAT1", CallStatus: "completed", CallDuration: "40" });
     await new Promise((r) => setTimeout(r, 20));
     assert.strictEqual(t.trials[0].callSid, "CAT1");
+    t.close();
+  });
+
+  await check("the call-end report carries the transcript, language, AI cost and account", async () => {
+    const t = await start({ allowed: true, mode: "subscriber_platinum", userId: "u5", secondsRemaining: 600, tools: { mode: "limited", limits: { weather: 50 } } });
+    await t.post("/incoming-call", { CallSid: "CAE1", From: "+15550001115", To: "+15550002222" });
+    const s = t.callStore.get("CAE1");
+    assert.deepStrictEqual(s.toolAccess, { mode: "limited", limits: { weather: 50 } });
+    s.transcriptLines = ["AI: Hi.", "Caller: Weather in Austin?", "AI: Sunny."];
+    s.replyLanguage = "es";
+    s.usage = { responses: 3, textIn: 1000, audioIn: 2000, cachedText: 0, cachedAudio: 0, textOut: 100, audioOut: 900 };
+    s.costModels = { model: "gpt-realtime-mini", transcribeModel: "gpt-4o-mini-transcribe" };
+    await t.post("/call-status", { CallSid: "CAE1", CallStatus: "completed", CallDuration: "61" });
+    await new Promise((r) => setTimeout(r, 20));
+    const e = t.ends[0];
+    assert.strictEqual(e.callSid, "CAE1");
+    assert.strictEqual(e.userId, "u5");
+    assert.deepStrictEqual(e.transcript, s.transcriptLines);
+    assert.strictEqual(e.language, "es");
+    assert.strictEqual(e.durationSeconds, 61);
+    assert.strictEqual(typeof e.costUsd, "number");
+    assert.ok(e.costUsd > 0 && e.costUsd < 1);
+    t.close();
+  });
+
+  await check("a call where the caller never spoke sends no transcript", async () => {
+    const t = await start({ allowed: true, mode: "trial", maxSecondsThisCall: 60 });
+    await t.post("/incoming-call", { CallSid: "CAE2", From: "+15550001116", To: "+15550002222" });
+    t.callStore.get("CAE2").transcriptLines = ["AI: Hi."];
+    await t.post("/call-status", { CallSid: "CAE2", CallStatus: "completed", CallDuration: "5" });
+    await new Promise((r) => setTimeout(r, 20));
+    assert.deepStrictEqual(t.ends[0].transcript, []);
+    assert.strictEqual(t.ends[0].userId, null);
+    t.close();
+  });
+
+  await check("no tool info from the platform: the call keeps all tools", async () => {
+    const t = await start({ allowed: true, mode: "subscriber", userId: "u6", secondsRemaining: 600 });
+    await t.post("/incoming-call", { CallSid: "CAE3", From: "+15550001117", To: "+15550002222" });
+    assert.strictEqual(t.callStore.get("CAE3").toolAccess, undefined);
     t.close();
   });
 

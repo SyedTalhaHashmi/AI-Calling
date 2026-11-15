@@ -6,6 +6,7 @@
 const express = require("express");
 const twilio = require("twilio");
 const { formatTranscript, hasCallerSpeech } = require("../utils/transcript");
+const { estimateCost, emptyUsage } = require("../utils/realtimeCost");
 
 const GENERIC_FALLBACK =
   "Sorry, the assistant had a problem. Please try again later. Goodbye.";
@@ -57,6 +58,7 @@ function createCallRoutes({ logger, callStore, services, config }) {
       session.billingMode = "legacy";
       session.platformUserId = null;
       session.maxBillableSeconds = null;
+      session.toolAccess = undefined;
 
       const check = await services.platformApi?.callerCheck?.({
         callerNumber: session.callerNumber,
@@ -76,6 +78,8 @@ function createCallRoutes({ logger, callStore, services, config }) {
         }
         session.billingMode = check.mode || "legacy";
         session.platformUserId = check.userId || null;
+        // Which live tools this call may use (plan and monthly limits); absent = all on
+        session.toolAccess = check.tools || undefined;
         if (check.transcriptEmail && String(check.transcriptEmail).trim()) {
           session.transcriptEmailTo = String(check.transcriptEmail).trim();
         }
@@ -171,17 +175,26 @@ function createCallRoutes({ logger, callStore, services, config }) {
     const durationSeconds = Math.max(0, Number(req.body.CallDuration || 0));
     const callerNumber = req.body.From || session.callerNumber || null;
     const calledNumber = req.body.To || session.calledNumber || null;
+    // Length, transcript, language and AI cost: kept in the outbox until the platform confirms
+    let costUsd = null;
+    if (session.usage?.responses && session.costModels) {
+      costUsd = estimateCost({ ...emptyUsage(), ...session.usage }, { ...session.costModels, callSeconds: durationSeconds }).usd;
+    }
     services.platformApi
       ?.notifyCallEnd({
         callSid,
+        userId: session.platformUserId || null,
         status: callStatus,
         endedAt: new Date().toISOString(),
         durationSeconds,
         transcriptSent,
         callerNumber,
         calledNumber,
+        transcript: hasCallerSpeech(session) ? session.transcriptLines : [],
+        language: session.replyLanguage || null,
+        costUsd: costUsd != null && Number.isFinite(costUsd) ? Math.round(costUsd * 10000) / 10000 : null,
       })
-      .catch(() => {});
+      ?.catch?.(() => {});
     if (durationSeconds > 0 && services.platformApi?.enabled) {
       const mode = session?.billingMode;
       const userId = session?.platformUserId || null;

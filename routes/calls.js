@@ -81,10 +81,11 @@ function createCallRoutes({ logger, callStore, services, config }) {
         }
         if (check.mode === "subscriber" && check.secondsRemaining > 0) {
           session.maxBillableSeconds = check.secondsRemaining;
-        } else if (check.mode === "trial" && check.maxSecondsThisCall > 0) {
+        } else if (check.maxSecondsThisCall > 0) {
+          // Trial calls, and Pay As You Go calls (a length cap set by the platform)
           session.maxBillableSeconds = check.maxSecondsThisCall;
         }
-        // overage / subscriber_platinum: no hard cap — Platinum continues past included minutes
+        // overage / subscriber_platinum without a cap: the call continues past included minutes
       }
 
       logger.info(
@@ -189,6 +190,7 @@ function createCallRoutes({ logger, callStore, services, config }) {
       if (mode === "trial" && callerNumber) {
         services.platformApi
           .trialReport({
+            callSid,
             callerNumber,
             secondsConsumed: durationSeconds,
           })
@@ -201,6 +203,7 @@ function createCallRoutes({ logger, callStore, services, config }) {
       ) {
         services.platformApi
           .reportUsage({
+            callSid,
             userId,
             callerNumber,
             secondsConsumed: durationSeconds,
@@ -210,6 +213,7 @@ function createCallRoutes({ logger, callStore, services, config }) {
       } else if (userId) {
         services.platformApi
           .reportUsage({
+            callSid,
             userId,
             callerNumber,
             secondsConsumed: durationSeconds,

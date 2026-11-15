@@ -1,4 +1,6 @@
+const path = require("path");
 const axios = require("axios");
+const createUsageOutbox = require("./usageOutbox");
 
 function createPlatformApi(config, logger) {
   const baseURL = config.platform?.apiBaseUrl;
@@ -11,22 +13,41 @@ function createPlatformApi(config, logger) {
     timeout: 8000,
   });
 
-  async function post(path, body, headers, timeoutMs) {
+  async function post(urlPath, body, headers, timeoutMs) {
     if (!enabled) return { ok: false, skipped: true };
     try {
-      await http.post(path, body, {
+      await http.post(urlPath, body, {
         headers,
         timeout: timeoutMs || 8000,
       });
       return { ok: true };
     } catch (err) {
       logger.warn(
-        { err: err.message, path },
+        { err: err.message, path: urlPath, status: err.response?.status },
         "Platform API sync failed (non-blocking)"
       );
-      return { ok: false, error: err.message };
+      return { ok: false, error: err.message, status: err.response?.status };
     }
   }
+
+  // Call reports (minutes used, free minute) go through a durable outbox: written to
+  // disk first, retried until the platform confirms, applied once there by call id.
+  const outbox = enabled
+    ? createUsageOutbox({
+        filePath:
+          config.platform?.usageOutboxPath ||
+          path.join(process.cwd(), "data", "usage-outbox.json"),
+        logger,
+        send: (kind, payload) =>
+          post(
+            kind === "trial" ? "/api/v1/usage/trial-report" : "/api/v1/usage/report",
+            payload,
+            { "x-usage-secret": usageSecret },
+            10000
+          ),
+      })
+    : null;
+  if (outbox) outbox.start();
 
   /**
    * Synchronous gate before streaming audio.
@@ -58,12 +79,8 @@ function createPlatformApi(config, logger) {
   }
 
   async function trialReport(payload) {
-    return post(
-      "/api/v1/usage/trial-report",
-      payload,
-      { "x-usage-secret": usageSecret },
-      10000
-    );
+    if (outbox) return outbox.enqueue("trial", payload, payload?.callSid ? `trial:${payload.callSid}` : undefined);
+    return post("/api/v1/usage/trial-report", payload, { "x-usage-secret": usageSecret }, 10000);
   }
 
   return {
@@ -87,13 +104,10 @@ function createPlatformApi(config, logger) {
       );
     },
     reportUsage(payload) {
-      return post(
-        "/api/v1/usage/report",
-        payload,
-        { "x-usage-secret": usageSecret },
-        10000
-      );
+      if (outbox) return outbox.enqueue("usage", payload, payload?.callSid ? `usage:${payload.callSid}` : undefined);
+      return post("/api/v1/usage/report", payload, { "x-usage-secret": usageSecret }, 10000);
     },
+    outbox,
   };
 }
 

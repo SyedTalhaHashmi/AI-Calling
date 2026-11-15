@@ -107,6 +107,8 @@ const config = {
     apiBaseUrl: process.env.PLATFORM_API_BASE_URL || "",
     integrationSecret: process.env.INTEGRATION_WEBHOOK_SECRET || "",
     usageSecret: process.env.USAGE_WEBHOOK_SECRET || "",
+    /** Where unsent call reports wait for retry. Put it on a persistent volume in production. */
+    usageOutboxPath: process.env.USAGE_OUTBOX_PATH || "",
   },
   /** Landing page “Play Voice” demo — proxied via POST /api/public/landing-demo-tts */
   elevenlabs: {

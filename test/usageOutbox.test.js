@@ -152,5 +152,14 @@ function onDisk(file) {
     assert.strictEqual(item.nextAt - clock, 10 * 60 * 1000);
   });
 
+  await check("a rejected call-end never leaves its transcript in the dead-letter file", async () => {
+    const file = tempFile();
+    const box = createUsageOutbox({ filePath: file, logger: silent, send: async () => ({ ok: false, status: 400 }) });
+    await box.enqueue("call-end", { callSid: "CA9", transcript: ["Caller: my secret"] }, "callend:CA9");
+    const dead = fs.readFileSync(`${file}.dead`, "utf8");
+    assert.ok(!dead.includes("my secret"));
+    assert.ok(dead.includes("callend:CA9"));
+  });
+
   console.log(`\n${passed} passed`);
 })();

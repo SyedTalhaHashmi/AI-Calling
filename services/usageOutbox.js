@@ -46,7 +46,9 @@ function createUsageOutbox({
 
   function deadLetter(item, status, error) {
     try {
-      fs.appendFileSync(`${filePath}.dead`, `${JSON.stringify({ ...item, status, error, at: new Date(now()).toISOString() })}\n`);
+      // Call transcripts are not kept in the dead-letter file (it is never cleaned up)
+      const payload = item.payload && "transcript" in item.payload ? { ...item.payload, transcript: "[removed]" } : item.payload;
+      fs.appendFileSync(`${filePath}.dead`, `${JSON.stringify({ ...item, payload, status, error, at: new Date(now()).toISOString() })}\n`);
     } catch (err) {
       logger.error({ err: err.message }, "Usage outbox: could not write dead-letter file");
     }

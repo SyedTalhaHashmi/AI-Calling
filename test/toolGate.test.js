@@ -188,5 +188,20 @@ const session = (tools, extra = {}) => ({ platformUserId: "u1", billingMode: "su
     assert.match(g.say, /isn't included in your plan/);
   });
 
+  await check("keys differ between two streams of the same call", async () => {
+    const api = fakeApi({ ok: true, data: { allowed: true } });
+    const s = session({ mode: "limited", limits: { weather: 50 } });
+    await createToolGate({ platformApi: api, session: s, callSid: "CA1", logger: silent }).check("weather", "get_weather");
+    await createToolGate({ platformApi: api, session: s, callSid: "CA1", logger: silent }).check("weather", "get_weather");
+    assert.notStrictEqual(api.sent[0].key, api.sent[1].key);
+  });
+
+  await check("Family Premium without a tool in its limits: no upgrade offer", async () => {
+    const api = fakeApi({ ok: true, data: { allowed: true } });
+    const gate = createToolGate({ platformApi: api, session: session({ mode: "limited", limits: { weather: 100 }, canUpgrade: false }), callSid: "CA1", logger: silent });
+    const g = await gate.check("flights", "get_flight_fare");
+    assert.ok(!/upgrade/.test(g.say), g.say);
+  });
+
   console.log(`\n${passed} passed`);
 })();

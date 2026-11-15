@@ -290,6 +290,30 @@ const weatherCall = (callId, args) => ({
     c.close();
   });
 
+  await check("regex mode: web search at its limit: the refusal is the only answer, no search", async () => {
+    const api = fakePlatform({ allowed: false, reason: "limit_reached", limit: 20, resetsAt: "2026-12-10T00:00:00.000Z", canUpgrade: true });
+    const c = await startCall({ routerMode: "regex", webSearch: true, platformApi: api, session: { platformUserId: "u1", billingMode: "subscriber_platinum", toolAccess: { mode: "limited", limits: { research: 20 } } } });
+    await c.say("Search the web for the price of gas in Miami today.");
+    await waitFor(() => c.creates().length === 2);
+    await sleep(50);
+    assert.strictEqual(c.creates().length, 2, "one reply only");
+    const ins = c.creates()[1].response.instructions;
+    assert.ok(/all 20 internet searches/.test(ins) && /upgrade/.test(ins), ins);
+    assert.ok(!/Google/.test(ins), ins);
+    assert.deepStrictEqual(c.calls, []);
+    c.close();
+  });
+
+  await check("regex mode: a refusal to a Spanish caller is translated in full", async () => {
+    const api = fakePlatform({ allowed: true });
+    const c = await startCall({ routerMode: "regex", platformApi: api, session: { replyLanguage: "es", platformUserId: "u1", billingMode: "subscriber_platinum", toolAccess: { mode: "none", limits: {} } } });
+    await c.say("What's the weather in Bogota?");
+    await waitFor(() => c.creates().length === 2);
+    const ins = c.creates()[1].response.instructions;
+    assert.ok(/Say this in Spanish/.test(ins) && /isn't included in your plan/.test(ins), ins);
+    c.close();
+  });
+
   await check("tools mode: a refused tool returns the refusal to the model, the service isn't called", async () => {
     const api = fakePlatform({ allowed: false, reason: "not_in_plan", canUpgrade: true });
     const c = await startCall({ routerMode: "tools", platformApi: api, session: { platformUserId: "u1", billingMode: "subscriber_platinum", toolAccess: { mode: "check", limits: {} } } });

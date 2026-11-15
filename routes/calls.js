@@ -17,6 +17,18 @@ function getStreamUrl(req, configuredBaseUrl) {
   return `${wsBase}/media-stream`;
 }
 
+/** The first lines that fit in 200 KB (the platform keeps no more; bigger reports are refused). */
+function capTranscript(lines) {
+  const out = [];
+  let size = 2;
+  for (const line of lines || []) {
+    size += Buffer.byteLength(JSON.stringify(String(line)), "utf8") + 1;
+    if (size > 200 * 1024) break;
+    out.push(String(line));
+  }
+  return out;
+}
+
 function createCallRoutes({ logger, callStore, services, config }) {
   const router = express.Router();
 
@@ -190,7 +202,7 @@ function createCallRoutes({ logger, callStore, services, config }) {
         transcriptSent,
         callerNumber,
         calledNumber,
-        transcript: hasCallerSpeech(session) ? session.transcriptLines : [],
+        transcript: hasCallerSpeech(session) ? capTranscript(session.transcriptLines) : [],
         language: session.replyLanguage || null,
         costUsd: costUsd != null && Number.isFinite(costUsd) ? Math.round(costUsd * 10000) / 10000 : null,
       })

@@ -95,6 +95,8 @@ function withTimeout(promise, ms) {
  */
 function createToolGate({ platformApi, session, callSid, logger, timeoutMs = 1500 }) {
   let seq = 0;
+  // Keys are unique per stream too, so a reconnect of the same call never reuses one
+  const streamTag = require("crypto").randomBytes(4).toString("hex");
   const OK = { ok: true, done() {} };
 
   async function check(key, toolName) {
@@ -107,14 +109,14 @@ function createToolGate({ platformApi, session, callSid, logger, timeoutMs = 150
       return { ok: false, say: notInPlan(key, { trial, canUpgrade: access.canUpgrade }), done() {} };
     }
     if (access.mode === "limited" && !(access.limits?.[key] > 0)) {
-      return { ok: false, say: notInPlan(key, { trial: false }), done() {} };
+      return { ok: false, say: notInPlan(key, { trial: false, canUpgrade: access.canUpgrade }), done() {} };
     }
 
     seq += 1;
     const payload = {
       action: "reserve",
       userId: session.platformUserId,
-      key: `${callSid}:${key}:${seq}`,
+      key: `${callSid || "nocall"}:${streamTag}:${key}:${seq}`,
       tool: key,
       toolName,
       callSid,

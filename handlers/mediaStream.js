@@ -863,10 +863,13 @@ function createMediaStreamHandler({
           /** held: re-entered after the greeting pause (logging, transcript, and counters already done). */
           function handleUserTranscript(text, turnId, { held = false } = {}) {
             // Metrics helpers bound to this turn (pass results through unchanged)
-            // A plan-limit refusal is said in full, in the caller's language
-            let deniedSay = null;
-            const sendReply = (reply, opts = {}) =>
-              sendReplyBase(reply, { ...opts, turnId, ...(deniedSay && reply === deniedSay ? { exact: true } : {}) });
+            // A plan-limit refusal is the whole answer: said at once, in full, in the caller's
+            // language; whatever the lookup branch would have said after it is dropped
+            let refusalSpoken = false;
+            const sendReply = (reply, opts = {}) => {
+              if (refusalSpoken) return;
+              sendReplyBase(reply, { ...opts, turnId });
+            };
             // Paid lookups ask the plan first (one unit each); a failed lookup gives the unit back
             const timed = (label, fn) =>
               metrics.time(turnId, label, async () => {
@@ -874,7 +877,10 @@ function createMediaStreamHandler({
                 if (!key || !toolGate) return fn();
                 const g = await toolGate.check(key, label);
                 if (!g.ok) {
-                  deniedSay = g.say;
+                  if (!refusalSpoken) {
+                    refusalSpoken = true;
+                    sendReplyBase(g.say, { turnId, exact: true });
+                  }
                   return { error: g.say, planLimit: true };
                 }
                 let result;

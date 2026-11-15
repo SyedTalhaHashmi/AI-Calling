@@ -140,5 +140,16 @@ async function start(callerCheck) {
     t.close();
   });
 
+  await check("a huge transcript is cut to 200 KB before it is sent", async () => {
+    const t = await start({ allowed: true, mode: "subscriber", userId: "u7", secondsRemaining: 600 });
+    await t.post("/incoming-call", { CallSid: "CAE4", From: "+15550001118", To: "+15550002222" });
+    t.callStore.get("CAE4").transcriptLines = Array.from({ length: 5000 }, (_, i) => `Caller: line ${i} ${"x".repeat(80)}`);
+    await t.post("/call-status", { CallSid: "CAE4", CallStatus: "completed", CallDuration: "600" });
+    await new Promise((r) => setTimeout(r, 20));
+    assert.ok(JSON.stringify(t.ends[0].transcript).length <= 200 * 1024);
+    assert.ok(t.ends[0].transcript.length > 100);
+    t.close();
+  });
+
   console.log(`\n${passed} passed`);
 })();

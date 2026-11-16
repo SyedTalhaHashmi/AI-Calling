@@ -67,6 +67,12 @@ function notInPlan(key, { trial, canUpgrade = true }) {
     : `Sorry, ${what} isn't included in your plan.`;
 }
 
+/** An admin switched the service off (kill switch). */
+function unavailable(key) {
+  const what = NOUN[key]?.one || "this lookup";
+  return `Sorry, ${what} isn't available right now. Please try again later.`;
+}
+
 function limitReached(key, { limit, resetsAt, canUpgrade }, now = Date.now) {
   const many = NOUN[key]?.many || "lookups";
   let when = "";
@@ -108,6 +114,8 @@ function createToolGate({ platformApi, session, callSid, logger, timeoutMs = 150
   async function check(key, toolName) {
     if (!key) return OK;
     const access = session?.toolAccess;
+    // Switched off by an admin: not called, for any plan
+    if (access?.off?.includes(key)) return { ok: false, say: unavailable(key), done() {}, giveBack() {} };
     // Platform off, or an older platform that doesn't send tool info: tools stay on.
     if (!platformApi?.enabled || !access || access.mode === "unlimited") return OK;
     const trial = session?.billingMode === "trial" || !session?.platformUserId;
@@ -131,7 +139,11 @@ function createToolGate({ platformApi, session, callSid, logger, timeoutMs = 150
       callSid,
     };
     const refusal = (data) =>
-      data.reason === "limit_reached" ? limitReached(key, data) : notInPlan(key, { trial: false, canUpgrade: data.canUpgrade });
+      data.reason === "service_off"
+        ? unavailable(key)
+        : data.reason === "limit_reached"
+          ? limitReached(key, data)
+          : notInPlan(key, { trial: false, canUpgrade: data.canUpgrade });
 
     const asked = Promise.resolve().then(() => platformApi.toolUse(payload));
     const out = await withTimeout(asked, timeoutMs).catch((err) => ({ ok: false, error: err.message }));
@@ -191,4 +203,4 @@ function createToolGate({ platformApi, session, callSid, logger, timeoutMs = 150
   return { check };
 }
 
-module.exports = { createToolGate, toolLimitKey, labelLimitKey, notInPlan, limitReached };
+module.exports = { createToolGate, toolLimitKey, labelLimitKey, notInPlan, limitReached, unavailable };

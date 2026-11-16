@@ -242,5 +242,22 @@ const session = (tools, extra = {}) => ({ platformUserId: "u1", billingMode: "su
     assert.ok(!/January/.test(say));
   });
 
+  await check("switched off by an admin: 'isn't available right now', even on an old unlimited plan, nothing asked", async () => {
+    const api = fakeApi({ ok: true, data: { allowed: true } });
+    const gate = createToolGate({ platformApi: api, session: session({ mode: "unlimited", limits: {}, off: ["weather"] }), callSid: "CA1", logger: silent });
+    const g = await gate.check("weather", "get_weather");
+    assert.strictEqual(g.ok, false);
+    assert.match(g.say, /live weather isn't available right now/);
+    assert.ok(!/plan|upgrade/.test(g.say));
+    assert.strictEqual(api.sent.length, 0);
+    assert.strictEqual((await gate.check("research", "web_search")).ok, true, "other tools on");
+  });
+
+  await check("switched off after the call began: the platform's answer says so", async () => {
+    const api = fakeApi({ ok: true, data: { allowed: false, reason: "service_off" } });
+    const gate = createToolGate({ platformApi: api, session: session({ mode: "limited", limits: { maps: 10 } }), callSid: "CA1", logger: silent });
+    assert.match((await gate.check("maps", "find_places")).say, /isn't available right now/);
+  });
+
   console.log(`\n${passed} passed`);
 })();

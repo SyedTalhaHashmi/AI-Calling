@@ -290,6 +290,21 @@ const weatherCall = (callId, args) => ({
     c.close();
   });
 
+  await check("reminder call: Buddy opens with the reminder, and knows it placed the call", async () => {
+    const c = await startCall({ routerMode: "regex", session: { outbound: { kind: "reminder", reminderId: "r1", attempt: 1, message: "Take your pills" } } });
+    const greet = c.creates()[0].response.instructions;
+    assert.ok(/calling with your reminder: Take your pills/.test(greet), greet);
+    const upd = c.received.find((m) => m.type === "session.update");
+    assert.ok(/You placed this call/.test(upd.session.instructions));
+    c.close();
+  });
+
+  await check("inbound call: the usual greeting", async () => {
+    const c = await startCall({ routerMode: "regex" });
+    assert.ok(/I'm Buddy, your AI friend/.test(c.creates()[0].response.instructions));
+    c.close();
+  });
+
   await check("regex mode: two cities, the second refused: the first city's unit is given back", async () => {
     let n = 0;
     const api = {

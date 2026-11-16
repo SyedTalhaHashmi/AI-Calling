@@ -34,7 +34,11 @@ const config = {
     accountSid: required("TWILIO_ACCOUNT_SID"),
     authToken: required("TWILIO_AUTH_TOKEN"),
     phoneNumber: required("TWILIO_PHONE_NUMBER"),
+    /** Caller ID for reminder calls; the main number when unset. */
+    outboundCallerId: process.env.TWILIO_OUTBOUND_CALLER_ID || "",
   },
+  /** Longest reminder call, in seconds (plan minutes still apply). */
+  reminderCallMaxSeconds: positiveInt(env("REMINDER_CALL_MAX_SECONDS")) || 300,
   openai: {
     apiKey: required("OPENAI_API_KEY"),
   },

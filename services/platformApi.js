@@ -42,6 +42,9 @@ function createPlatformApi(config, logger) {
           if (kind === "call-end") {
             return post("/api/v1/integrations/voice/call-end", payload, { "x-integration-secret": integrationSecret }, 15000);
           }
+          if (kind === "reminder-result") {
+            return post("/api/v1/integrations/voice/reminder-result", payload, { "x-integration-secret": integrationSecret }, 10000);
+          }
           if (kind === "tool-record" || kind === "tool-release") {
             return post("/api/v1/integrations/voice/tool-use", payload, { "x-integration-secret": integrationSecret }, 10000);
           }
@@ -120,6 +123,27 @@ function createPlatformApi(config, logger) {
           headers: { "x-integration-secret": integrationSecret },
           timeout: 3000,
         });
+        return { ok: true, data };
+      } catch (err) {
+        return { ok: false, error: err.message, status: err.response?.status };
+      }
+    },
+    /** How one reminder call try went: through the outbox, once per try. */
+    reportReminderResult(payload) {
+      if (!outbox) return;
+      outbox.enqueue("reminder-result", payload, `reminder:${payload.reminderId}:${payload.attempt}`).catch(() => {});
+    },
+    /** Reminder tools on a call (set, list, cancel) and the keypad consent: answers needed now. */
+    async reminders(action, payload) {
+      if (!enabled) return { ok: false, skipped: true };
+      const path = {
+        set: "/api/v1/integrations/voice/reminders",
+        list: "/api/v1/integrations/voice/reminders/list",
+        cancel: "/api/v1/integrations/voice/reminders/cancel",
+        consent: "/api/v1/integrations/voice/reminder-consent",
+      }[action];
+      try {
+        const { data } = await http.post(path, payload, { headers: { "x-integration-secret": integrationSecret }, timeout: 5000 });
         return { ok: true, data };
       } catch (err) {
         return { ok: false, error: err.message, status: err.response?.status };

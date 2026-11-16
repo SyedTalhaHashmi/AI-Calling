@@ -21,6 +21,7 @@ const createFlightsService = require("./services/flights");
 const createStocksService = require("./services/stocks");
 const createWebSearchService = require("./services/webSearch");
 const createPlatformApi = require("./services/platformApi");
+const createOutboundRoutes = require("./routes/outbound");
 const createMediaStreamHandler = require("./handlers/mediaStream");
 const twilio = require("twilio");
 
@@ -69,6 +70,17 @@ function buildServer() {
       callStore,
       services,
       config,
+    })
+  );
+  // Reminder calls: placed when the platform's worker asks
+  app.use(
+    "/",
+    createOutboundRoutes({
+      logger,
+      callStore,
+      config,
+      twilioClient: twilioVoiceClient,
+      platformApi: services.platformApi,
     })
   );
 

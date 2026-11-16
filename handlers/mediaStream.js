@@ -107,6 +107,20 @@ const MAX_TOOL_ROUNDS = 2;
 // Short, warm greeting — then stop and listen (no long intros)
 const GREETING = "Hi! I'm Buddy, your AI friend. Ask me anything you want.";
 
+/** Inbound: the usual greeting. Reminder call: Buddy says who it is and the reminder first. */
+function openingLine(session) {
+  if (session?.outbound?.kind === "reminder") {
+    return `Hi, it's Buddy from Buddy Call A I, calling with your reminder: ${session.outbound.message}. Is there anything else I can help you with?`;
+  }
+  return GREETING;
+}
+
+/** Reminder calls: Buddy placed this call; a short, warm goodbye when they're done. */
+function outboundInstruction(session) {
+  if (session?.outbound?.kind !== "reminder") return null;
+  return `- You placed this call to give the caller their reminder ("${session.outbound.message}"), which you already said. If they ask, repeat it. If they have nothing else, say a short goodbye such as "Okay, take care. Goodbye!" and stop.`;
+}
+
 function buildRealtimeInstructions(session, { toolsMode = false, webSearch = false } = {}) {
   const parts = [
     SYSTEM_PROMPT,
@@ -115,6 +129,8 @@ function buildRealtimeInstructions(session, { toolsMode = false, webSearch = fal
     languageInstruction(session),
     billingInstruction(session),
   ];
+  const outbound = outboundInstruction(session);
+  if (outbound) parts.push(outbound);
   if (toolsMode) parts.push("", TOOLS_SESSION_RULES);
   if (toolsMode && webSearch) parts.push(WEB_SEARCH_SESSION_RULE);
   return parts.join("\n");
@@ -755,7 +771,7 @@ function createMediaStreamHandler({
             JSON.stringify(
               createResponsePayload(
                 {
-                  instructions: `Say exactly: ${GREETING}`,
+                  instructions: `Say exactly: ${openingLine(callStore.get(callSid))}`,
                   tools: [],
                 },
                 metrics.beginSystemTurn("greeting"),

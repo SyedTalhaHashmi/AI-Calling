@@ -7,6 +7,7 @@ const express = require("express");
 const twilio = require("twilio");
 const { formatTranscript, hasCallerSpeech } = require("../utils/transcript");
 const { estimateCost, emptyUsage } = require("../utils/realtimeCost");
+const { reminderOutcome } = require("./outbound");
 
 const GENERIC_FALLBACK =
   "Sorry, the assistant had a problem. Please try again later. Goodbye.";
@@ -161,6 +162,16 @@ function createCallRoutes({ logger, callStore, services, config }) {
       return res.status(200).send("ok");
     }
 
+    // A reminder call: the platform learns how this try went (retry, done or email)
+    if (session.outbound?.kind === "reminder") {
+      services.platformApi?.reportReminderResult?.({
+        reminderId: session.outbound.reminderId,
+        attempt: session.outbound.attempt,
+        outcome: reminderOutcome(session, callStatus),
+        callSid,
+      });
+    }
+
     let transcriptSent = false;
     // Blocked callers and hang-ups before speaking left "No conversation captured." emails
     if (!hasCallerSpeech(session)) {
@@ -185,8 +196,9 @@ function createCallRoutes({ logger, callStore, services, config }) {
     }
 
     const durationSeconds = Math.max(0, Number(req.body.CallDuration || 0));
-    const callerNumber = req.body.From || session.callerNumber || null;
-    const calledNumber = req.body.To || session.calledNumber || null;
+    // On a reminder call Twilio's From is our number: the member is the number we called
+    const callerNumber = (session.outbound ? session.callerNumber : req.body.From || session.callerNumber) || null;
+    const calledNumber = (session.outbound ? session.calledNumber : req.body.To || session.calledNumber) || null;
     // Length, transcript, language and AI cost: kept in the outbox until the platform confirms
     let costUsd = null;
     if (session.usage?.responses && session.costModels) {

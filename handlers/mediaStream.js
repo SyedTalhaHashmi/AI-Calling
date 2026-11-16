@@ -866,6 +866,7 @@ function createMediaStreamHandler({
             // A plan-limit refusal is the whole answer: said at once, in full, in the caller's
             // language; whatever the lookup branch would have said after it is dropped
             let refusalSpoken = false;
+            const turnUses = [];
             const sendReply = (reply, opts = {}) => {
               if (refusalSpoken) return;
               sendReplyBase(reply, { ...opts, turnId });
@@ -875,14 +876,19 @@ function createMediaStreamHandler({
               metrics.time(turnId, label, async () => {
                 const key = labelLimitKey(label);
                 if (!key || !toolGate) return fn();
+                // Already refused this turn: nothing more is looked up or counted
+                if (refusalSpoken) return { error: "refused", planLimit: true };
                 const g = await toolGate.check(key, label);
                 if (!g.ok) {
                   if (!refusalSpoken) {
                     refusalSpoken = true;
                     sendReplyBase(g.say, { turnId, exact: true });
                   }
+                  // Other lookups of this turn won't be said: give their units back
+                  for (const other of turnUses) other.giveBack();
                   return { error: g.say, planLimit: true };
                 }
+                turnUses.push(g);
                 let result;
                 try {
                   result = await fn();
@@ -890,7 +896,8 @@ function createMediaStreamHandler({
                   g.done({ error: err.message });
                   throw err;
                 }
-                g.done(result);
+                if (refusalSpoken) g.giveBack();
+                else g.done(result);
                 return result;
               });
             // Fare for the caller's dates when they gave any, else the recent cheapest (any dates)

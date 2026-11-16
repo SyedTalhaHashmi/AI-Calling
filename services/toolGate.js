@@ -67,12 +67,16 @@ function notInPlan(key, { trial, canUpgrade = true }) {
     : `Sorry, ${what} isn't included in your plan.`;
 }
 
-function limitReached(key, { limit, resetsAt, canUpgrade }) {
+function limitReached(key, { limit, resetsAt, canUpgrade }, now = Date.now) {
   const many = NOUN[key]?.many || "lookups";
   let when = "";
   const d = resetsAt ? new Date(resetsAt) : null;
   if (d && !Number.isNaN(d.getTime())) {
-    when = ` They reset on ${d.toLocaleDateString("en-US", { month: "long", day: "numeric", timeZone: "UTC" })}.`;
+    // The monthly reset runs a few minutes after the period ends
+    when =
+      d.getTime() <= now()
+        ? " They reset in the next few minutes."
+        : ` They reset on ${d.toLocaleDateString("en-US", { month: "long", day: "numeric", timeZone: "UTC" })}.`;
   }
   const count = limit ? `all ${limit} ${many}` : `all the ${many}`;
   const upgrade = canUpgrade === false ? "" : ` For more, you can upgrade your plan at ${SITE}.`;
@@ -97,7 +101,9 @@ function createToolGate({ platformApi, session, callSid, logger, timeoutMs = 150
   let seq = 0;
   // Keys are unique per stream too, so a reconnect of the same call never reuses one
   const streamTag = require("crypto").randomBytes(4).toString("hex");
-  const OK = { ok: true, done() {} };
+  const OK = { ok: true, done() {}, giveBack() {} };
+  /** Tools the platform said are used up, with the sentence to say. */
+  const exhausted = new Map();
 
   async function check(key, toolName) {
     if (!key) return OK;
@@ -106,11 +112,14 @@ function createToolGate({ platformApi, session, callSid, logger, timeoutMs = 150
     if (!platformApi?.enabled || !access || access.mode === "unlimited") return OK;
     const trial = session?.billingMode === "trial" || !session?.platformUserId;
     if (access.mode === "none" || trial) {
-      return { ok: false, say: notInPlan(key, { trial, canUpgrade: access.canUpgrade }), done() {} };
+      return { ok: false, say: notInPlan(key, { trial, canUpgrade: access.canUpgrade }), done() {}, giveBack() {} };
     }
     if (access.mode === "limited" && !(access.limits?.[key] > 0)) {
-      return { ok: false, say: notInPlan(key, { trial: false, canUpgrade: access.canUpgrade }), done() {} };
+      return { ok: false, say: notInPlan(key, { trial: false, canUpgrade: access.canUpgrade }), done() {}, giveBack() {} };
     }
+
+    const used = exhausted.get(key);
+    if (used) return { ok: false, say: used, done() {}, giveBack() {} };
 
     seq += 1;
     const payload = {
@@ -121,38 +130,61 @@ function createToolGate({ platformApi, session, callSid, logger, timeoutMs = 150
       toolName,
       callSid,
     };
-    let released = false;
-    const done = (result) => {
-      if (released || !result?.error) return;
-      released = true;
-      platformApi.queueToolReport("tool-release", { ...payload, action: "release" });
-    };
+    const refusal = (data) =>
+      data.reason === "limit_reached" ? limitReached(key, data) : notInPlan(key, { trial: false, canUpgrade: data.canUpgrade });
 
-    const out = await withTimeout(Promise.resolve().then(() => platformApi.toolUse(payload)), timeoutMs).catch((err) => ({
-      ok: false,
-      error: err.message,
-    }));
+    const asked = Promise.resolve().then(() => platformApi.toolUse(payload));
+    const out = await withTimeout(asked, timeoutMs).catch((err) => ({ ok: false, error: err.message }));
     if (out?.ok && out.data) {
-      if (out.data.allowed) return { ok: true, done };
-      logger.info({ callSid, tool: key, reason: out.data.reason }, "Tool refused by plan limit");
-      const say =
-        out.data.reason === "limit_reached"
-          ? limitReached(key, out.data)
-          : notInPlan(key, { trial: false, canUpgrade: out.data.canUpgrade });
-      return { ok: false, say, done() {} };
+      if (!out.data.allowed) {
+        logger.info({ callSid, tool: key, reason: out.data.reason }, "Tool refused by plan limit");
+        const say = refusal(out.data);
+        // Used up for the rest of this call: later asks are refused without asking again
+        exhausted.set(key, say);
+        return { ok: false, say, done() {}, giveBack() {} };
+      }
+      let released = false;
+      const release = () => {
+        if (released) return;
+        released = true;
+        platformApi.queueToolReport("tool-release", { ...payload, action: "release" });
+      };
+      return {
+        ok: true,
+        // A failed lookup gives its unit back
+        done(result) {
+          if (result?.error) release();
+        },
+        // The answer was not used (another part of the turn was refused), even after it worked
+        giveBack: release,
+      };
     }
     // No answer in time: answer anyway, and count the use later if the lookup worked
     // (same key, so a reserve that did arrive is not counted twice).
     logger.warn({ callSid, tool: key, err: out?.error || (out?.timedOut ? "timeout" : `status ${out?.status}`) }, "Tool check unavailable; answering and counting later");
-    let reported = false;
+    // If the late answer says the tool is used up, the rest of the call knows it
+    asked
+      .then((late) => {
+        if (late?.ok && late.data && !late.data.allowed) exhausted.set(key, refusal(late.data));
+      })
+      .catch(() => {});
+    let recorded = false;
+    let released = false;
+    const release = () => {
+      if (released) return;
+      released = true;
+      platformApi.queueToolReport("tool-release", { ...payload, action: "release" });
+    };
     return {
       ok: true,
       done(result) {
-        if (reported) return;
-        reported = true;
-        if (result?.error) platformApi.queueToolReport("tool-release", { ...payload, action: "release" });
-        else platformApi.queueToolReport("tool-record", { ...payload, action: "record" });
+        if (result?.error) return release();
+        if (recorded || released) return;
+        recorded = true;
+        platformApi.queueToolReport("tool-record", { ...payload, action: "record" });
       },
+      // Record and release use the same key; in either order the platform ends with no unit.
+      giveBack: release,
     };
   }
 

@@ -290,6 +290,31 @@ const weatherCall = (callId, args) => ({
     c.close();
   });
 
+  await check("regex mode: two cities, the second refused: the first city's unit is given back", async () => {
+    let n = 0;
+    const api = {
+      sent: [],
+      queued: [],
+      enabled: true,
+      toolUse: async (p) => {
+        api.sent.push(p);
+        n += 1;
+        return n === 1
+          ? { ok: true, data: { allowed: true } }
+          : { ok: true, data: { allowed: false, reason: "limit_reached", limit: 50, resetsAt: "2026-12-10T00:00:00.000Z" } };
+      },
+      queueToolReport: (k, p) => api.queued.push([k, p]),
+    };
+    const c = await startCall({ routerMode: "regex", platformApi: api, session: { platformUserId: "u1", billingMode: "subscriber_platinum", toolAccess: { mode: "limited", limits: { weather: 50 } } } });
+    await c.say("Is it hot in Miami or Orlando?");
+    await waitFor(() => c.creates().length === 2);
+    await waitFor(() => api.queued.length === 1);
+    assert.strictEqual(api.queued[0][0], "tool-release");
+    assert.strictEqual(api.queued[0][1].key, api.sent[0].key);
+    assert.ok(/all 50 weather checks/.test(c.creates()[1].response.instructions));
+    c.close();
+  });
+
   await check("regex mode: web search at its limit: the refusal is the only answer, no search", async () => {
     const api = fakePlatform({ allowed: false, reason: "limit_reached", limit: 20, resetsAt: "2026-12-10T00:00:00.000Z", canUpgrade: true });
     const c = await startCall({ routerMode: "regex", webSearch: true, platformApi: api, session: { platformUserId: "u1", billingMode: "subscriber_platinum", toolAccess: { mode: "limited", limits: { research: 20 } } } });

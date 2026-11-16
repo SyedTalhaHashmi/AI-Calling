@@ -203,5 +203,44 @@ const session = (tools, extra = {}) => ({ platformUserId: "u1", billingMode: "su
     assert.ok(!/upgrade/.test(g.say), g.say);
   });
 
+  await check("an answer that is dropped gives its unit back, even after the lookup worked", async () => {
+    const api = fakeApi({ ok: true, data: { allowed: true } });
+    const gate = createToolGate({ platformApi: api, session: session({ mode: "limited", limits: { weather: 50 } }), callSid: "CA1", logger: silent });
+    const g = await gate.check("weather", "get_weather");
+    g.done({ temp: 70 });
+    g.giveBack();
+    g.giveBack();
+    assert.deepStrictEqual(api.queued.map((q) => q[0] ?? q.kind), ["tool-release"]);
+  });
+
+  await check("used up once in a call: later asks are refused without asking again", async () => {
+    const api = fakeApi({ ok: true, data: { allowed: false, reason: "limit_reached", limit: 50, resetsAt: "2026-12-10T00:00:00.000Z" } });
+    const gate = createToolGate({ platformApi: api, session: session({ mode: "limited", limits: { weather: 50 } }), callSid: "CA1", logger: silent });
+    await gate.check("weather", "get_weather");
+    const again = await gate.check("weather", "get_weather");
+    assert.strictEqual(again.ok, false);
+    assert.strictEqual(api.sent.length, 1);
+  });
+
+  await check("a late 'used up' answer (after fail-open) stops the next ask at once", async () => {
+    let answer;
+    const api = fakeApi(() => new Promise((r) => (answer = r)));
+    const gate = createToolGate({ platformApi: api, session: session({ mode: "limited", limits: { weather: 50 } }), callSid: "CA1", logger: silent, timeoutMs: 10 });
+    const g = await gate.check("weather", "get_weather");
+    assert.strictEqual(g.ok, true);
+    answer({ ok: true, data: { allowed: false, reason: "limit_reached", limit: 50 } });
+    await new Promise((r) => setTimeout(r, 5));
+    const next = await gate.check("weather", "get_weather");
+    assert.strictEqual(next.ok, false);
+    assert.strictEqual(api.sent.length, 1);
+  });
+
+  await check("a reset date already passed is said as 'in the next few minutes'", async () => {
+    const { limitReached } = require("../services/toolGate");
+    const say = limitReached("weather", { limit: 50, resetsAt: "2020-01-01T00:00:00Z" });
+    assert.match(say, /next few minutes/);
+    assert.ok(!/January/.test(say));
+  });
+
   console.log(`\n${passed} passed`);
 })();

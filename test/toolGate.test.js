@@ -56,11 +56,20 @@ const session = (tools, extra = {}) => ({ platformUserId: "u1", billingMode: "su
     assert.strictEqual(labelLimitKey("world_time"), null);
   });
 
-  await check("unlimited (old plans): no question asked", async () => {
+  await check("unlimited (old plans): allowed, and still asked so the use is recorded and a switch-off applies", async () => {
     const api = fakeApi({ ok: true, data: { allowed: true } });
     const gate = createToolGate({ platformApi: api, session: session({ mode: "unlimited", limits: {} }), callSid: "CA1", logger: silent });
     const g = await gate.check("weather", "get_weather");
     assert.strictEqual(g.ok, true);
+    assert.strictEqual(api.sent.length, 1);
+    const off = createToolGate({ platformApi: fakeApi({ ok: true, data: { allowed: false, reason: "service_off" } }), session: session({ mode: "unlimited", limits: {} }), callSid: "CA1", logger: silent });
+    assert.match((await off.check("weather", "get_weather")).say, /isn't available right now/);
+  });
+
+  await check("QA numbers (unlimited, no account): no question asked", async () => {
+    const api = fakeApi({ ok: true, data: { allowed: true } });
+    const gate = createToolGate({ platformApi: api, session: session({ mode: "unlimited", limits: {} }, { platformUserId: null, billingMode: "test" }), callSid: "CA1", logger: silent });
+    assert.strictEqual((await gate.check("weather", "get_weather")).ok, true);
     assert.strictEqual(api.sent.length, 0);
   });
 

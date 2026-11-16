@@ -117,7 +117,11 @@ function createToolGate({ platformApi, session, callSid, logger, timeoutMs = 150
     // Switched off by an admin: not called, for any plan
     if (access?.off?.includes(key)) return { ok: false, say: unavailable(key), done() {}, giveBack() {} };
     // Platform off, or an older platform that doesn't send tool info: tools stay on.
-    if (!platformApi?.enabled || !access || access.mode === "unlimited") return OK;
+    // Platform off, or an older platform that doesn't send tool info: tools stay on.
+    // Old unlimited plans still ask (always allowed), so a switch-off during the call
+    // applies and every lookup is recorded for the cost report.
+    if (!platformApi?.enabled || !access) return OK;
+    if (access.mode === "unlimited" && !session?.platformUserId) return OK;
     const trial = session?.billingMode === "trial" || !session?.platformUserId;
     if (access.mode === "none" || trial) {
       return { ok: false, say: notInPlan(key, { trial, canUpgrade: access.canUpgrade }), done() {}, giveBack() {} };

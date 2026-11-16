@@ -4,7 +4,7 @@
 
 **Goal:** Every call's transcript, language and AI cost reach the backend reliably; live tools obey each plan's monthly limits; customers see usage, limits, calls, transcripts and summaries in the new dashboard; Plus and Family Premium calls get a written summary.
 
-**Architecture:** The voice server keeps its pipeline and gains two small things: a call-end report (through the existing durable outbox) and a tool gate in front of every paid lookup. The backend owns the rules: a reserve/release endpoint with an atomic per-period counter, encrypted transcript storage, and a worker job that writes summaries (Gemini free tier, Grok fallback). The frontend dashboard reads two new user endpoints.
+**Architecture:** The voice server keeps its pipeline and gains two small things: a call-end report (through the existing durable outbox) and a tool gate in front of every paid lookup. The backend owns the rules: a reserve/release endpoint with an atomic per-period counter, encrypted transcript storage, and a worker job that writes summaries (Gemini free tier, Groq fallback). The frontend dashboard reads two new user endpoints.
 
 **Tech stack:** Express 4 + Prisma 5 + Postgres (backend), Node voice server, Next.js 16 / React 19 (frontendnext).
 
@@ -16,7 +16,7 @@
 - "When a limit is reached, the tool stops until the next monthly reset. Buddy explains this and offers an upgrade. No paid API is called."
 - "Permission first: check subscription, plan and monthly limit, and reserve one unit, before calling any paid API. Release the unit if the provider fails."
 - "Costs: log the cost of every call and request per customer and plan."
-- Summaries: Plus/Family only (`features.summaries`), Gemini free tier, Grok fallback. Never OpenAI. No live AI calls in tests.
+- Summaries: Plus/Family only (`features.summaries`), Gemini free tier, Groq fallback. Never OpenAI. No live AI calls in tests.
 - Voice system unchanged apart from the hand-off and the gate. No SMS.
 - Never run anything against `backend/.env`'s DATABASE_URL (production). E2E on throwaway Docker Postgres.
 - Every report from the voice server is idempotent by call id and goes through the outbox.
@@ -57,10 +57,10 @@ Tests: transcript stored encrypted and decrypts; repeat report is one session an
 
 **Files:** `backend/src/lib/summaries.js`, `backend/src/jobs/billingJobs.js` (register), `backend/src/config.js`, test `backend/test/summaries.test.js`.
 
-- `summarizeTranscript(text, { fetchImpl }) -> { text, provider }`: Gemini `generateContent` (`GEMINI_API_KEY`, `GEMINI_MODEL`, default `gemini-2.5-flash`), Grok `chat/completions` (`XAI_API_KEY`, `XAI_MODEL`, default `grok-3-mini`) on failure; 20 s timeout each.
+- `summarizeTranscript(text, { fetchImpl }) -> { text, provider }`: Gemini `generateContent` (`GEMINI_API_KEY`, `GEMINI_MODEL`, default `gemini-2.5-flash`), Groq `chat/completions` (`GROQ_API_KEY`, `GROQ_MODEL`, default `llama-3.3-70b-versatile`) on failure; 20 s timeout each.
 - `runSummaries({ limit = 10 })`: claim rows `summaryStatus in (pending, working-stale>5min)` one by one with a conditional update; on success `done`; on failure attempts+1, `failed` after 3.
 
-Tests: Gemini answer stored; Gemini fails → Grok; both fail → retried then failed at 3; no keys → stays pending (nothing to do); two runners never take one row.
+Tests: Gemini answer stored; Gemini fails → Groq; both fail → retried then failed at 3; no keys → stays pending (nothing to do); two runners never take one row.
 
 ### Task 4: Customer dashboard API
 

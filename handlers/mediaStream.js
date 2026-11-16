@@ -10,6 +10,14 @@ const { emptyUsage, addResponseUsage, estimateCost } = require("../utils/realtim
 const { spokenRate } = require("../services/fx");
 const { createToolGate, toolLimitKey, labelLimitKey } = require("../services/toolGate");
 const {
+  REMINDER_TOOL_DEFS,
+  REMINDER_TOOL_NAMES,
+  isReminderAsk,
+  reminderTurnInstruction,
+  reminderFollowUpInstruction,
+  createReminderExecutor,
+} = require("./reminderTools");
+const {
   findCountryInText,
   normalizeCountryCode,
   defaultCityForCountry,
@@ -396,8 +404,15 @@ function createMediaStreamHandler({
     : null;
 
   /** Session tool config: tools mode → all enabled tools; regex mode → unchanged legacy weather tool. */
-  function sessionToolFields() {
-    if (toolsMode) return { tools: toolDefinitions, tool_choice: "auto" };
+  /** Members (not the free minute) can set reminder calls; the platform keeps the rules. */
+  function remindersOffered(sess) {
+    return Boolean(platformApi?.enabled && sess?.platformUserId && sess?.billingMode !== "trial");
+  }
+
+  function sessionToolFields(sess) {
+    if (toolsMode) {
+      return { tools: remindersOffered(sess) ? [...toolDefinitions, ...REMINDER_TOOL_DEFS] : toolDefinitions, tool_choice: "auto" };
+    }
     if (weatherService && weatherService.enabled) {
       return { tools: [WEATHER_TOOL], tool_choice: "auto" };
     }
@@ -444,6 +459,8 @@ function createMediaStreamHandler({
     const usage = emptyUsage();
     /** Plan / limit check before paid lookups; set when the stream starts. */
     let toolGate = null;
+    /** Reminder tools and keypad consent; set when the stream starts. */
+    let reminderExec = null;
     let callStartedAt = 0;
     let callClosed = false;
     let speechStartedAt = 0;
@@ -529,7 +546,11 @@ function createMediaStreamHandler({
       const rounds = (toolTurn?.rounds || 0) + 1;
       const speechSeqAtStart = userSpeechSeq;
       (async () => {
-        const outputs = await runToolCalls(calls, toolExecutor, {
+        const executor = {
+          execute: (name, args) =>
+            REMINDER_TOOL_NAMES.has(name) && reminderExec ? reminderExec.execute(name, args) : toolExecutor.execute(name, args),
+        };
+        const outputs = await runToolCalls(calls, executor, {
           timed: (label, fn) => metrics.time(metricsTurnId, label, fn),
           // Plan and monthly limit first; a refusal is the tool's answer, said to the caller
           gate: toolGate ? (name, args) => toolGate.check(toolLimitKey(name, args), name) : null,
@@ -655,6 +676,7 @@ function createMediaStreamHandler({
         startSession.usage = usage;
         startSession.costModels = { model: rt.model, transcribeModel: rt.transcribeModel };
         toolGate = createToolGate({ platformApi, session: startSession, callSid, logger });
+        reminderExec = createReminderExecutor({ platformApi, session: startSession, callSid, logger });
         callStartedAt = Date.now();
         if (activeCalls && callSid) activeCalls.add(callSid);
         // The greeting reaches the transcript from its spoken audio, like every other reply
@@ -761,7 +783,7 @@ function createMediaStreamHandler({
               },
             },
             ...realtimeSessionExtras(rt),
-            ...sessionToolFields(),
+            ...sessionToolFields(billSession),
           };
           openaiWs.send(
             JSON.stringify({ type: "session.update", session })
@@ -822,7 +844,7 @@ function createMediaStreamHandler({
             const payload = {
               type: "realtime",
               instructions: buildRealtimeInstructions(sess, { toolsMode, webSearch: webSearchOffered }),
-              ...sessionToolFields(),
+              ...sessionToolFields(sess),
             };
             openaiWs.send(
               JSON.stringify({ type: "session.update", session: payload })
@@ -1119,6 +1141,31 @@ function createMediaStreamHandler({
             }
             logger.info({ callSid, intent }, "Intent resolved");
             metrics.setRoute(turnId, "fast_path", intent);
+
+            // Reminder calls: the model gets the reminder tools for this turn (and for the
+            // caller's answer if it asked "what time?")
+            if (remindersOffered(sessionRef)) {
+              const followUp = (sessionRef.reminderTurnsLeft || 0) > 0 && intent === "chat";
+              if (isReminderAsk(trimmed) || followUp) {
+                sessionRef.reminderTurnsLeft = followUp ? sessionRef.reminderTurnsLeft - 1 : 2;
+                if (responseInProgress) {
+                  metrics.finishWithoutReply(turnId, "skipped_busy");
+                  return;
+                }
+                const langName = languageLabel(sessionRef.replyLanguage || "en");
+                openaiWs.send(
+                  JSON.stringify(
+                    createResponsePayload(
+                      { instructions: reminderTurnInstruction(langName, sessionRef), tools: REMINDER_TOOL_DEFS, tool_choice: "auto" },
+                      turnId
+                    )
+                  )
+                );
+                logger.info({ callSid, followUp }, "Reminder turn");
+                return;
+              }
+              sessionRef.reminderTurnsLeft = 0;
+            }
 
             // Weather-only place memory — do not leak Colombia hint onto hotel/Miami asks
             if (intent === "weather") {
@@ -1598,6 +1645,33 @@ function createMediaStreamHandler({
               handleToolsResponse(ev.response, endedTurnId);
             }
 
+            // Regex mode: reminder tool calls from a reminder turn
+            const reminderCalls =
+              !toolsMode && isActiveCompletion && ev.type === "response.done" && reminderExec
+                ? (ev.response?.output || []).filter((o) => o?.type === "function_call" && REMINDER_TOOL_NAMES.has(o.name) && o.call_id)
+                : [];
+            if (reminderCalls.length) {
+              (async () => {
+                const sessNow = callStore.get(callSid);
+                for (const out of reminderCalls) {
+                  let args = {};
+                  try {
+                    args = JSON.parse(out.arguments || "{}");
+                  } catch (_) {}
+                  const result = await reminderExec.execute(out.name, args);
+                  logger.info({ callSid, tool: out.name, ok: Boolean(result.ok), code: result.error || null, needsConsent: Boolean(result.needsConsent) }, "Reminder tool result");
+                  if (sessNow && !result.needsConsent) sessNow.reminderTurnsLeft = 0;
+                  if (!openaiWs || openaiWs.readyState !== WebSocket.OPEN) return;
+                  openaiWs.send(
+                    JSON.stringify({ type: "conversation.item.create", item: { type: "function_call_output", call_id: out.call_id, output: JSON.stringify(result) } })
+                  );
+                }
+                if (!openaiWs || openaiWs.readyState !== WebSocket.OPEN) return;
+                const langName = languageLabel(sessNow?.replyLanguage || "en");
+                openaiWs.send(JSON.stringify(createResponsePayload({ instructions: reminderFollowUpInstruction(langName), tools: [] }, endedTurnId)));
+              })().catch((err) => logger.error({ callSid, err: err.message }, "Reminder tool failed"));
+            }
+
             // Regex mode only: legacy single weather tool
             if (
               !toolsMode &&
@@ -1731,6 +1805,27 @@ function createMediaStreamHandler({
         } catch (err) {
           logger.warn({ callSid, err: err.message }, "Audio convert failed");
         }
+        return;
+      }
+
+      // Keypad: "press 1 to agree to reminder calls" (bidirectional streams send dtmf)
+      if (msg.event === "dtmf") {
+        const digit = String(msg.dtmf?.digit || "");
+        logger.info({ callSid, digit }, "Keypad press");
+        if (!reminderExec || !digit) return;
+        reminderExec
+          .handleDigit(digit)
+          .then((say) => {
+            if (!say || !openaiWs || openaiWs.readyState !== WebSocket.OPEN) return;
+            interruptAgentPlayback();
+            const langName = languageLabel(callStore.get(callSid)?.replyLanguage || "en");
+            const instructions =
+              langName === "English"
+                ? `Say only the quoted text, word for word, adding nothing: "${say}"`
+                : `Say this in ${langName} and nothing else, translating it fully and keeping every date, time and number: ${say}`;
+            openaiWs.send(JSON.stringify(createResponsePayload({ instructions, tools: [] }, metrics.beginSystemTurn("keypad"))));
+          })
+          .catch((err) => logger.error({ callSid, err: err.message }, "Keypad handling failed"));
         return;
       }
 

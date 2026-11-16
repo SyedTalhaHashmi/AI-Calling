@@ -290,6 +290,106 @@ const weatherCall = (callId, args) => ({
     c.close();
   });
 
+  const reminderPlatform = (answers) => {
+    const sent = [];
+    return {
+      sent,
+      enabled: true,
+      toolUse: async () => ({ ok: true, data: { allowed: true } }),
+      queueToolReport: () => {},
+      reminders: async (action, payload) => {
+        sent.push([action, payload]);
+        const a = answers[action];
+        const data = typeof a === "function" ? a() : a;
+        return data === undefined ? { ok: false } : { ok: true, data };
+      },
+    };
+  };
+  const memberSession = { platformUserId: "u1", billingMode: "subscriber_platinum", callerNumber: "+15550001111", timezone: "America/Chicago" };
+
+  await check("regex mode: 'remind me…' gets a reply with the reminder tools and the local time", async () => {
+    const api = reminderPlatform({});
+    const c = await startCall({ routerMode: "regex", platformApi: api, session: memberSession });
+    await c.say("Remind me tomorrow at 9 to take my pills.");
+    await waitFor(() => c.creates().length === 2);
+    const r = c.creates()[1].response;
+    assert.deepStrictEqual(r.tools.map((t) => t.name), ["set_reminder", "list_reminders", "cancel_reminder"]);
+    assert.ok(/America\/Chicago/.test(r.instructions), r.instructions);
+    c.close();
+  });
+
+  await check("regex mode: the model's set_reminder call is sent to the platform and the result is said", async () => {
+    const api = reminderPlatform({ set: { ok: true, say: "Okay. I'll call you Tuesday, November 17 at 9:00 AM to remind you: take my pills." } });
+    const c = await startCall({ routerMode: "regex", platformApi: api, session: memberSession });
+    await c.say("Remind me tomorrow at 9 to take my pills.");
+    await waitFor(() => c.creates().length === 2);
+    await c.completeLast([{ type: "function_call", name: "set_reminder", call_id: "rm1", arguments: JSON.stringify({ message: "take my pills", when: "2026-11-17T09:00" }) }]);
+    await waitFor(() => c.creates().length === 3);
+    assert.deepStrictEqual(api.sent[0], ["set", { userId: "u1", callSid: "CAtest", callerNumber: "+15550001111", message: "take my pills", when: "2026-11-17T09:00" }]);
+    const out = c.received.find((m) => m.type === "conversation.item.create" && m.item?.call_id === "rm1");
+    assert.ok(/Tuesday, November 17/.test(out.item.output));
+    assert.deepStrictEqual(c.creates()[2].response.tools, []);
+    c.close();
+  });
+
+  await check("regex mode: 'what time?' then '9 AM tomorrow' — the answer still reaches the reminder tools", async () => {
+    const api = reminderPlatform({});
+    const c = await startCall({ routerMode: "regex", platformApi: api, session: memberSession });
+    await c.say("Can you set a reminder for me?");
+    await waitFor(() => c.creates().length === 2);
+    await c.completeLast([]);
+    await c.say("Nine in the morning tomorrow, to call my sister.", "item-2");
+    await waitFor(() => c.creates().length === 3);
+    assert.deepStrictEqual(c.creates()[2].response.tools.map((t) => t.name), ["set_reminder", "list_reminders", "cancel_reminder"]);
+    c.close();
+  });
+
+  await check("keypad 1 after the consent question: consent saved, reminder set, Buddy says so", async () => {
+    let agreed = false;
+    const api = reminderPlatform({
+      set: () => (agreed ? { ok: true, say: "Okay. I'll call you Tuesday at 9:00 AM to remind you: pills." } : { ok: false, code: "no_consent", say: "Press 1 on your keypad to agree to reminder calls." }),
+      consent: () => ((agreed = true), { ok: true }),
+    });
+    const c = await startCall({ routerMode: "regex", platformApi: api, session: memberSession });
+    await c.say("Remind me tomorrow at 9 to take my pills.");
+    await waitFor(() => c.creates().length === 2);
+    await c.completeLast([{ type: "function_call", name: "set_reminder", call_id: "rm1", arguments: JSON.stringify({ message: "pills", when: "2026-11-17T09:00" }) }]);
+    await waitFor(() => c.creates().length === 3);
+    c.twilio.emit("message", JSON.stringify({ event: "dtmf", streamSid: "MZtest", dtmf: { track: "inbound_track", digit: "1" } }));
+    await waitFor(() => c.creates().length === 4);
+    assert.ok(/Thank you\. Okay\. I'll call you Tuesday/.test(c.creates()[3].response.instructions), c.creates()[3].response.instructions);
+    assert.deepStrictEqual(api.sent.map((x) => x[0]), ["set", "consent", "set"]);
+    c.close();
+  });
+
+  await check("free-minute caller saying 'remind me': normal reply, no reminder tools", async () => {
+    const api = reminderPlatform({});
+    const c = await startCall({ routerMode: "regex", platformApi: api, session: { billingMode: "trial" } });
+    await c.say("Remind me tomorrow at 9 to take my pills.");
+    await waitFor(() => c.creates().length === 2);
+    assert.ok(!(c.creates()[1].response.tools || []).some((t) => t.name === "set_reminder"));
+    c.close();
+  });
+
+  await check("tools mode: members get the reminder tools in the session", async () => {
+    const c = await startCall({ routerMode: "tools", platformApi: reminderPlatform({}), session: memberSession });
+    const upd = c.received.find((m) => m.type === "session.update");
+    assert.ok(upd.session.tools.some((t) => t.name === "set_reminder"));
+    c.close();
+  });
+
+  await check("tools mode: a set_reminder call goes to the platform, not the lookup services", async () => {
+    const api = reminderPlatform({ set: { ok: true, say: "Okay. I'll call you Tuesday at 9:00 AM to remind you: pills." } });
+    const c = await startCall({ routerMode: "tools", platformApi: api, session: memberSession });
+    await c.say("Remind me tomorrow at 9 to take my pills.");
+    await waitFor(() => c.creates().length === 2);
+    await c.completeLast([{ type: "function_call", name: "set_reminder", call_id: "rt1", arguments: JSON.stringify({ message: "pills", when: "2026-11-17T09:00" }) }]);
+    await waitFor(() => c.received.some((m) => m.type === "conversation.item.create" && m.item?.call_id === "rt1"));
+    assert.strictEqual(api.sent[0][0], "set");
+    assert.deepStrictEqual(c.calls, []);
+    c.close();
+  });
+
   await check("reminder call: Buddy opens with the reminder, and knows it placed the call", async () => {
     const c = await startCall({ routerMode: "regex", session: { outbound: { kind: "reminder", reminderId: "r1", attempt: 1, message: "Take your pills" } } });
     const greet = c.creates()[0].response.instructions;

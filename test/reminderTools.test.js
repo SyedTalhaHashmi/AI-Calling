@@ -41,7 +41,8 @@ const member = (extra = {}) => ({ platformUserId: "u1", billingMode: "subscriber
     for (const t of ["Remind me tomorrow at 9 to take my pills", "Can you set a reminder?", "What reminders do I have?", "Cancel my reminder", "Recuérdame mañana a las 9", "mis recordatorios"]) {
       assert.ok(isReminderAsk(t), t);
     }
-    for (const t of ["What's the weather?", "Remainder of the day", "I remember that"]) assert.ok(!isReminderAsk(t), t);
+    for (const t of ["What's the weather?", "Remainder of the day", "I remember that", "Remind me what the weather is in Miami", "remind me who won the game", "Recuérdame qué hora es en Madrid"]) assert.ok(!isReminderAsk(t), t);
+    for (const t of ["Remind me at 5 to call mom", "remind me, take my pills tomorrow", "I need a reminder call"]) assert.ok(isReminderAsk(t), t);
   });
 
   await check("the reminder turn gives the model the caller's local time and zone", async () => {

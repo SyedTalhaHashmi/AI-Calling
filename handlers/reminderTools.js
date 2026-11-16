@@ -43,9 +43,18 @@ const REMINDER_TOOL_DEFS = [
 
 const REMINDER_TOOL_NAMES = new Set(REMINDER_TOOL_DEFS.map((t) => t.name));
 
-/** "Remind me…", "set a reminder", "my reminders", "cancel the reminder", Spanish too. */
+/**
+ * "Remind me to/at/tomorrow…", "set a reminder", "my reminders", "cancel the
+ * reminder", Spanish too. Not "remind me what the weather is" (a question, not a
+ * reminder call), which goes to the usual answers.
+ */
+const QUESTION_WORD = /^(?:what|who|whom|how|when|where|which|why|if|whether|qu[eé]|qui[eé]n|c[oó]mo|cu[aá]ndo|d[oó]nde|cu[aá]l)(?=[\s,?.!]|$)/i;
 function isReminderAsk(text) {
-  return /\b(remind(?:er|ers)?|recordatorios?|recu[eé]rdame|recordarme)\b/i.test(String(text || ""));
+  const t = String(text || "");
+  if (/\breminders?\b|\brecordatorios?\b/i.test(t)) return true;
+  const m = /\b(?:remind me|recu[eé]rdame|recordarme)\b[\s,]*(.*)$/i.exec(t);
+  if (!m) return false;
+  return !QUESTION_WORD.test(m[1].trim());
 }
 
 /** "2026-11-16T14:05" now in the zone. */

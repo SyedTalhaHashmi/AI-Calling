@@ -48,13 +48,13 @@ async function start({ callerCheck, twilioFails = false } = {}) {
     reportReminderResult: (p) => results.push(p),
   };
   const twilioClient = {
-    calls: {
+    calls: Object.assign((sid) => ({ fetch: async () => ({ sid, status: "completed" }) }), {
       create: async (opts) => {
         if (twilioFails) throw new Error("Twilio said no");
         dialed.push(opts);
         return { sid: `CAout${dialed.length}` };
       },
-    },
+    }),
   };
   const app = express();
   app.use(express.urlencoded({ extended: false }));
@@ -69,11 +69,13 @@ async function start({ callerCheck, twilioFails = false } = {}) {
     fetch(`${base}${path}`, { method: "POST", headers: { "Content-Type": "application/json", "x-integration-secret": secret }, body: JSON.stringify(body) }).then(async (r) => ({ status: r.status, body: await r.json().catch(() => ({})) }));
   const form = (path, body) =>
     fetch(`${base}${path}`, { method: "POST", headers: { "Content-Type": "application/x-www-form-urlencoded" }, body: new URLSearchParams(body).toString() }).then((r) => r.text());
+  const get = (path, secret = SECRET) =>
+    fetch(`${base}${path}`, { headers: { "x-integration-secret": secret } }).then(async (r) => ({ status: r.status, body: await r.json().catch(() => ({})) }));
   const close = () => {
     server.closeAllConnections();
     server.close();
   };
-  return { dialed, results, usage, callStore, json, form, close };
+  return { dialed, results, usage, callStore, json, form, get, close };
 }
 
 const member = { allowed: true, mode: "subscriber_platinum", userId: "u1", secondsRemaining: 3000, tools: { mode: "limited", limits: { weather: 50 } }, timezone: "America/Chicago", reminderConsent: true, transcriptEmail: "m@example.test" };
@@ -90,7 +92,7 @@ const job = { reminderId: "r1", attempt: 1, to: MEMBER, userId: "u1", message: "
     const d = t.dialed[0];
     assert.strictEqual(d.to, MEMBER);
     assert.strictEqual(d.from, "+18005550199");
-    assert.strictEqual(d.machineDetection, "Enable");
+    assert.strictEqual(d.machineDetection, "DetectMessageEnd");
     assert.strictEqual(d.url, "https://voice.example.test/outbound-answer");
     assert.strictEqual(d.statusCallback, "https://voice.example.test/call-status");
     const s = t.callStore.get("CAout1");
@@ -124,6 +126,33 @@ const job = { reminderId: "r1", attempt: 1, to: MEMBER, userId: "u1", message: "
     assert.strictEqual((await t.json("/internal/outbound/reminder", job, "nope")).status, 401);
     assert.strictEqual((await t.json("/internal/outbound/reminder", { ...job, to: "" })).status, 400);
     assert.strictEqual(t.dialed.length, 0);
+    t.close();
+  });
+
+  await check("the same try asked twice (platform timed out and retried): one dial, same call id", async () => {
+    const t = await start({ callerCheck: member });
+    const [a, b] = await Promise.all([t.json("/internal/outbound/reminder", job), t.json("/internal/outbound/reminder", job)]);
+    assert.strictEqual(t.dialed.length, 1);
+    assert.strictEqual(a.body.callSid, b.body.callSid);
+    t.close();
+  });
+
+  await check("account check unavailable: 503 'not dialed' so the platform tries again, never 'skipped'", async () => {
+    const t = await start({ callerCheck: { allowed: false, unavailable: true, message: "x" } });
+    const r = await t.json("/internal/outbound/reminder", job);
+    assert.strictEqual(r.status, 503);
+    assert.strictEqual(r.body.notDialed, true);
+    assert.strictEqual(t.dialed.length, 0);
+    t.close();
+  });
+
+  await check("call status lookup for the platform: secret required, Twilio's status returned", async () => {
+    const t = await start({ callerCheck: member });
+    const sid = "CA" + "a".repeat(32);
+    const ok = await t.get(`/internal/outbound/status?callSid=${sid}`);
+    assert.deepStrictEqual(ok, { status: 200, body: { status: "completed" } });
+    assert.strictEqual((await t.get(`/internal/outbound/status?callSid=${sid}`, "nope")).status, 401);
+    assert.strictEqual((await t.get("/internal/outbound/status?callSid=bad")).status, 400);
     t.close();
   });
 

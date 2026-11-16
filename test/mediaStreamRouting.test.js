@@ -390,10 +390,25 @@ const weatherCall = (callId, args) => ({
     c.close();
   });
 
+  await check("tools mode: members get today's local date and time for reminders", async () => {
+    const c = await startCall({ routerMode: "tools", platformApi: reminderPlatform({}), session: memberSession });
+    const upd = c.received.find((m) => m.type === "session.update");
+    assert.ok(/caller's local time is \w+ \d{4}-\d{2}-\d{2}T\d{2}:\d{2} \(America\/Chicago\)/.test(upd.session.instructions), "clock line");
+    c.close();
+  });
+
+  await check("regex mode: 'remind me what the weather is in Bogota' is a weather question, not a reminder", async () => {
+    const c = await startCall({ routerMode: "regex", platformApi: reminderPlatform({}), session: memberSession });
+    await c.say("Remind me what the weather is in Bogota.");
+    await waitFor(() => c.creates().length === 2);
+    assert.ok(/18 degrees Celsius/.test(c.creates()[1].response.instructions), c.creates()[1].response.instructions);
+    c.close();
+  });
+
   await check("reminder call: Buddy opens with the reminder, and knows it placed the call", async () => {
     const c = await startCall({ routerMode: "regex", session: { outbound: { kind: "reminder", reminderId: "r1", attempt: 1, message: "Take your pills" } } });
     const greet = c.creates()[0].response.instructions;
-    assert.ok(/calling with your reminder: Take your pills/.test(greet), greet);
+    assert.ok(/calling with your reminder: "Take your pills"/.test(greet), greet);
     const upd = c.received.find((m) => m.type === "session.update");
     assert.ok(/You placed this call/.test(upd.session.instructions));
     c.close();

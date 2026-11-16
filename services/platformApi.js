@@ -82,6 +82,8 @@ function createPlatformApi(config, logger) {
       return {
         skipped: false,
         allowed: false,
+        // Not an answer about the account: the platform couldn't be asked
+        unavailable: true,
         message:
           "We could not connect your call right now. Please try again later. Goodbye.",
       };

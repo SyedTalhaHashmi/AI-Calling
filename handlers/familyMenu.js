@@ -35,17 +35,51 @@ const TEXT = {
   },
 };
 
-const YES = /^(?:yes|yeah|yep|sure|ok(?:ay)?|of course|that's (?:ok|fine)|s[ií]|claro|est[aá] bien|de acuerdo|vale)(?=[\s,.!?]|$)/i;
-const NO = /^(?:no|nope|no thanks|not really|no gracias)(?=[\s,.!?]|$)/i;
-const STOP_CALLS = /\b(?:stop|cancel|don'?t want)\b.*\b(?:daily|check-?in|morning)\s+calls?\b|\b(?:deja|cancela)\b.*\bllamadas? diarias?\b/i;
-const CHANGE_SHARING = /\b(?:what|change)\b.*\b(?:my )?(?:family|relatives?|kids|children|son|daughter)\b.*\b(?:see|sees|share)\b|\bqu[eé] ve mi familia\b/i;
+/**
+ * A yes or no must be the whole, short reply ("Yes", "Sure, that's fine", "No thanks"),
+ * never a word inside a longer sentence ("No problem", "no sé", "okay so about the weather").
+ */
+const YES_START = new Set(["yes", "yeah", "yep", "sure", "ok", "okay", "si", "sí", "claro", "vale", "certainly", "absolutely"]);
+const YES_PHRASES = [/^of course\b/, /^that'?s (?:ok|okay|fine)\b/, /^est[aá] bien\b/, /^de acuerdo\b/];
+const NO_EXACT = new Set(["no", "nope", "no thanks", "no thank you", "not really", "no gracias", "no no", "no i don't", "no i do not", "no thats not ok", "no that's not ok", "no it's not", "no its not", "please don't", "no please don't"]);
+const FILLER = /\b(?:please|thanks|thank you|gracias|that's fine|that's ok|it's fine|fine|good|great)\b/g;
 
-function sharingFromSpeech(t) {
-  if (/transcript|everything|all of it|full|transcripci/i.test(t)) return "transcripts";
-  if (/summar|resumen/i.test(t)) return "summaries";
-  if (/only whether|just whether|status|answered|nothing|solo si/i.test(t)) return "status";
+function words(text) {
+  return String(text || "")
+    .toLowerCase()
+    .replace(/[.,!?¿¡]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function yesNo(text) {
+  const t = words(text);
+  if (!t) return null;
+  const list = t.split(" ");
+  if (NO_EXACT.has(t)) return "no";
+  if (list.length > 6) return null;
+  const rest = list.slice(1).join(" ").replace(FILLER, "").trim();
+  if ((YES_START.has(list[0]) || YES_PHRASES.some((r) => r.test(t))) && !/\b(?:no|not|don'?t|never)\b/.test(rest) && rest.split(" ").filter(Boolean).length <= 2) {
+    return "yes";
+  }
   return null;
 }
+
+const STOP_CALLS = /\b(?:stop|cancel|don'?t want)\b.*\b(?:daily|check-?in|morning)\s+calls?\b|\b(?:deja|cancela)\b.*\bllamadas? diarias?\b/i;
+const START_CALLS = /\b(?:start|restart|want|turn on)\b.*\b(?:daily|check-?in|morning)\s+calls?\b|\bquiero\b.*\bllamadas? diarias?\b/i;
+const CHANGE_SHARING = /\b(?:what|change)\b.*\b(?:my )?(?:family|relatives?|kids|children|son|daughter)\b.*\b(?:see|sees|share)\b|\bqu[eé] ve mi familia\b/i;
+
+/** Only clear words choose what is shared; "everything's fine" chooses nothing. */
+function sharingFromSpeech(text) {
+  const t = words(text);
+  if (/\b(?:full transcripts?|the transcripts?|transcripts?|transcripciones?)\b/.test(t)) return "transcripts";
+  if (/\b(?:summary|summaries|resumen|resúmenes|resumenes)\b/.test(t)) return "summaries";
+  if (/\b(?:only whether|just whether|whether i answered|only if i answered|solo si contest[eé])\b/.test(t)) return "status";
+  return null;
+}
+
+/** After this many replies that don't answer, the question is dropped (asked again next call). */
+const MAX_NON_ANSWERS = 2;
 
 function createFamilyMenu({ platformApi, session, callSid, logger }) {
   const lang = () => (session?.family?.language === "es" || session?.replyLanguage === "es" ? "es" : "en");
@@ -62,7 +96,23 @@ function createFamilyMenu({ platformApi, session, callSid, logger }) {
   function openingLine() {
     if (!active() || session.family.consent !== "pending" || session.outbound) return null;
     session.familyMenu = "consent";
+    session.familyMisses = 0;
     return t().consent(session.family);
+  }
+
+  function open(menu) {
+    session.familyMenu = menu;
+    session.familyMisses = 0;
+  }
+
+  /** A reply that isn't an answer: keep the question for one more turn, then let it go. */
+  function missed() {
+    session.familyMisses = (session.familyMisses || 0) + 1;
+    if (session.familyMisses >= MAX_NON_ANSWERS) {
+      logger.info({ callSid, menu: session.familyMenu }, "Family question dropped: no answer");
+      session.familyMenu = null;
+    }
+    return null;
   }
 
   async function answer(choice, method) {
@@ -75,7 +125,7 @@ function createFamilyMenu({ platformApi, session, callSid, logger }) {
       session.family.consent = out.consent;
       if (choice === "no") return t().declined;
       session.reminderConsent = true;
-      session.familyMenu = "sharing";
+      open("sharing");
       return t().sharing;
     }
     if (menu === "sharing") {
@@ -111,19 +161,27 @@ function createFamilyMenu({ platformApi, session, callSid, logger }) {
     const said = String(text || "").trim();
     if (session.familyMenu === "sharing") {
       const level = sharingFromSpeech(said);
-      return level ? answer(level, "voice") : null;
+      return level ? answer(level, "voice") : missed();
     }
     if (session.familyMenu === "consent" || session.familyMenu === "withdraw") {
-      const choice = YES.test(said) ? "yes" : NO.test(said) ? "no" : null;
-      return choice ? answer(choice, "voice") : null;
+      const choice = yesNo(said);
+      return choice ? answer(choice, "voice") : missed();
     }
     if (session.family.consent === "agreed" && STOP_CALLS.test(said)) {
-      session.familyMenu = "withdraw";
+      open("withdraw");
       return t().withdrawAsk;
     }
     if (session.family.consent === "agreed" && CHANGE_SHARING.test(said)) {
-      session.familyMenu = "sharing";
+      open("sharing");
       return t().sharing.replace(/^(Thank you! |¡Gracias! )/, "");
+    }
+    // After a "no": "start my daily calls" asks the consent question again
+    if (session.family.consent === "declined" && START_CALLS.test(said)) {
+      const out = await send("reopen", {});
+      if (!out) return t().error;
+      session.family.consent = "pending";
+      open("consent");
+      return t().consent(session.family);
     }
     return null;
   }
@@ -133,6 +191,7 @@ function createFamilyMenu({ platformApi, session, callSid, logger }) {
     if (!active()) return false;
     if (session.familyMenu) return true;
     const said = String(text || "");
+    if (session.family.consent === "declined") return START_CALLS.test(said);
     return session.family.consent === "agreed" && (STOP_CALLS.test(said) || CHANGE_SHARING.test(said));
   }
 
@@ -156,4 +215,4 @@ function checkinOpening(outbound, now = new Date()) {
   return `${g}${name}, it's Buddy with your daily call. How are you today?`;
 }
 
-module.exports = { createFamilyMenu, checkinOpening, TEXT };
+module.exports = { createFamilyMenu, checkinOpening, TEXT, yesNo, sharingFromSpeech };

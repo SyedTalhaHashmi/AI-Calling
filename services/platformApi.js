@@ -150,6 +150,7 @@ function createPlatformApi(config, logger) {
         consent: "/api/v1/integrations/voice/family-consent",
         sharing: "/api/v1/integrations/voice/family-sharing",
         withdraw: "/api/v1/integrations/voice/family-withdraw",
+        reopen: "/api/v1/integrations/voice/family-reopen",
       }[action];
       try {
         const { data } = await http.post(path, payload, { headers: { "x-integration-secret": integrationSecret }, timeout: 5000 });

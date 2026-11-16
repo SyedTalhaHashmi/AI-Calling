@@ -139,6 +139,50 @@ const member = (consent = "pending", extra = {}) => ({
     assert.strictEqual(await m.handleSpeech("stop my daily calls"), null);
   });
 
+  await check("yes/no only as a short whole reply", async () => {
+    const { yesNo } = require("../handlers/familyMenu");
+    for (const t of ["Yes", "yes please", "Sure, that's fine.", "Okay!", "Of course", "Sí, claro.", "Está bien", "That's okay"]) assert.strictEqual(yesNo(t), "yes", t);
+    for (const t of ["No", "No thanks.", "No, thank you", "Nope", "No gracias"]) assert.strictEqual(yesNo(t), "no", t);
+    for (const t of ["No problem", "No sé", "no se", "Okay so what's the weather like in Miami today", "Yes but I don't want calls", "No worries", "Sure I'd like to know the news", "I don't know"]) {
+      assert.strictEqual(yesNo(t), null, t);
+    }
+  });
+
+  await check("sharing only with clear words: 'everything's fine' or 'I'm full' choose nothing", async () => {
+    const { sharingFromSpeech } = require("../handlers/familyMenu");
+    assert.strictEqual(sharingFromSpeech("Everything's fine"), null);
+    assert.strictEqual(sharingFromSpeech("I'm full, I just ate"), null);
+    assert.strictEqual(sharingFromSpeech("I answered the door"), null);
+    assert.strictEqual(sharingFromSpeech("The full transcripts"), "transcripts");
+    assert.strictEqual(sharingFromSpeech("Just a summary"), "summaries");
+    assert.strictEqual(sharingFromSpeech("Only whether I answered"), "status");
+  });
+
+  await check("the consent question is dropped after two replies that don't answer it; a later 'No' means nothing", async () => {
+    const api = platform();
+    const s = member();
+    const m = createFamilyMenu({ platformApi: api, session: s, callSid: "CA1", logger: silent });
+    m.openingLine();
+    assert.strictEqual(await m.handleSpeech("What's the weather in Miami?"), null);
+    assert.strictEqual(s.familyMenu, "consent", "kept for one more turn");
+    assert.strictEqual(await m.handleSpeech("And tomorrow?"), null);
+    assert.strictEqual(s.familyMenu, null, "dropped");
+    assert.strictEqual(m.wants("No."), false);
+    assert.strictEqual(api.sent.length, 0);
+  });
+
+  await check("after a no: 'start my daily calls' asks the consent question again", async () => {
+    const api = platform();
+    api.family = async (action, payload) => (api.sent.push([action, payload]), { ok: true, data: { ok: true, consent: action === "consent" ? "agreed" : "pending" } });
+    const s = member("declined");
+    const m = createFamilyMenu({ platformApi: api, session: s, callSid: "CA1", logger: silent });
+    assert.strictEqual(m.wants("Can you start my daily calls again?"), true);
+    assert.match(await m.handleSpeech("Can you start my daily calls again?"), /I'll call you every day at 9:00 AM/);
+    assert.strictEqual(s.familyMenu, "consent");
+    await m.handleDigit("1");
+    assert.deepStrictEqual(api.sent.map((x) => x[0]), ["reopen", "consent"]);
+  });
+
   await check("check-in opening by the member's local time and language", async () => {
     const nine = new Date("2026-11-17T15:00:00Z"); // 9:00 in Chicago
     assert.strictEqual(checkinOpening({ memberName: "Rosa", language: "en", timezone: "America/Chicago" }, nine), "Good morning Rosa, it's Buddy with your daily call. How are you today?");

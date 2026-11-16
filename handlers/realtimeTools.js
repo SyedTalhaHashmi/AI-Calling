@@ -487,7 +487,7 @@ function serializeOutput(result) {
  * Run all calls in parallel; outputs keep call order.
  * timed(label, fn) is optional (latency metrics) and must pass results through.
  */
-function runToolCalls(calls, executor, { timed = (label, fn) => fn(), guard = () => null } = {}) {
+function runToolCalls(calls, executor, { timed = (label, fn) => fn(), guard = () => null, gate = null } = {}) {
   return Promise.all(
     calls.map(async (call) => {
       let args = {};
@@ -497,8 +497,18 @@ function runToolCalls(calls, executor, { timed = (label, fn) => fn(), guard = ()
         args = {};
       }
       // guard(name, args): a result object replaces the lookup (the service is not called)
-      const result =
-        guard(call.name, args) || (await timed(`tool:${call.name}`, () => executor.execute(call.name, args)));
+      let result = guard(call.name, args);
+      if (!result) {
+        // gate(name, args): plan and monthly limit; a refusal is the answer, and a failed
+        // lookup gives its unit back (done)
+        const g = gate ? await gate(call.name, args) : null;
+        if (g && !g.ok) {
+          result = { error: g.say, planLimit: true };
+        } else {
+          result = await timed(`tool:${call.name}`, () => executor.execute(call.name, args));
+          g?.done?.(result);
+        }
+      }
       return { call_id: call.call_id, name: call.name, args, result, output: serializeOutput(result) };
     })
   );

@@ -6,6 +6,8 @@
 const express = require("express");
 const twilio = require("twilio");
 const { formatTranscript, hasCallerSpeech } = require("../utils/transcript");
+const { estimateCost, emptyUsage } = require("../utils/realtimeCost");
+const { reminderOutcome } = require("./outbound");
 
 const GENERIC_FALLBACK =
   "Sorry, the assistant had a problem. Please try again later. Goodbye.";
@@ -14,6 +16,18 @@ function getStreamUrl(req, configuredBaseUrl) {
   const base = configuredBaseUrl || `${req.headers["x-forwarded-proto"] || req.protocol}://${req.get("host")}`;
   const wsBase = base.replace(/^https:\/\//, "wss://").replace(/^http:\/\//, "ws://");
   return `${wsBase}/media-stream`;
+}
+
+/** The first lines that fit in 200 KB (the platform keeps no more; bigger reports are refused). */
+function capTranscript(lines) {
+  const out = [];
+  let size = 2;
+  for (const line of lines || []) {
+    size += Buffer.byteLength(JSON.stringify(String(line)), "utf8") + 1;
+    if (size > 200 * 1024) break;
+    out.push(String(line));
+  }
+  return out;
 }
 
 function createCallRoutes({ logger, callStore, services, config }) {
@@ -57,6 +71,9 @@ function createCallRoutes({ logger, callStore, services, config }) {
       session.billingMode = "legacy";
       session.platformUserId = null;
       session.maxBillableSeconds = null;
+      session.toolAccess = undefined;
+      session.family = null;
+      session.transcriptDelivery = "transcript";
 
       const check = await services.platformApi?.callerCheck?.({
         callerNumber: session.callerNumber,
@@ -76,15 +93,24 @@ function createCallRoutes({ logger, callStore, services, config }) {
         }
         session.billingMode = check.mode || "legacy";
         session.platformUserId = check.userId || null;
+        // Which live tools this call may use (plan and monthly limits); absent = all on
+        session.toolAccess = check.tools || undefined;
+        // Reminders and Family Premium: time zone, consent, the member's check-in details
+        session.timezone = check.timezone;
+        session.reminderConsent = check.reminderConsent;
+        session.family = check.family || null;
+        // Gift accounts: the after-call email follows the member's sharing choice
+        session.transcriptDelivery = check.transcriptDelivery || "transcript";
         if (check.transcriptEmail && String(check.transcriptEmail).trim()) {
           session.transcriptEmailTo = String(check.transcriptEmail).trim();
         }
         if (check.mode === "subscriber" && check.secondsRemaining > 0) {
           session.maxBillableSeconds = check.secondsRemaining;
-        } else if (check.mode === "trial" && check.maxSecondsThisCall > 0) {
+        } else if (check.maxSecondsThisCall > 0) {
+          // Trial calls, and Pay As You Go calls (a length cap set by the platform)
           session.maxBillableSeconds = check.maxSecondsThisCall;
         }
-        // overage / subscriber_platinum: no hard cap — Platinum continues past included minutes
+        // overage / subscriber_platinum without a cap: the call continues past included minutes
       }
 
       logger.info(
@@ -144,9 +170,30 @@ function createCallRoutes({ logger, callStore, services, config }) {
       return res.status(200).send("ok");
     }
 
+    // A reminder or check-in call: the platform learns how this try went
+    if (session.outbound?.kind === "reminder") {
+      services.platformApi?.reportReminderResult?.({
+        reminderId: session.outbound.reminderId,
+        attempt: session.outbound.attempt,
+        outcome: reminderOutcome(session, callStatus),
+        callSid,
+      });
+    } else if (session.outbound?.kind === "checkin") {
+      services.platformApi?.reportCheckinResult?.({
+        checkinId: session.outbound.checkinId,
+        attempt: session.outbound.attempt,
+        outcome: reminderOutcome(session, callStatus),
+        callSid,
+      });
+    }
+
     let transcriptSent = false;
     // Blocked callers and hang-ups before speaking left "No conversation captured." emails
-    if (!hasCallerSpeech(session)) {
+    if (session.transcriptDelivery === "none" || session.transcriptDelivery === "summary") {
+      // The member shares only whether they answered (none) or summaries (sent by the
+      // platform once written): no transcript email for this call
+      logger.info({ callSid, delivery: session.transcriptDelivery }, "Transcript not emailed: the member's sharing choice");
+    } else if (!hasCallerSpeech(session)) {
       logger.info({ callSid, callStatus }, "Transcript not sent: caller never spoke");
     } else {
       try {
@@ -168,20 +215,32 @@ function createCallRoutes({ logger, callStore, services, config }) {
     }
 
     const durationSeconds = Math.max(0, Number(req.body.CallDuration || 0));
-    const callerNumber = req.body.From || session.callerNumber || null;
-    const calledNumber = req.body.To || session.calledNumber || null;
+    // On a reminder call Twilio's From is our number: the member is the number we called
+    const callerNumber = (session.outbound ? session.callerNumber : req.body.From || session.callerNumber) || null;
+    const calledNumber = (session.outbound ? session.calledNumber : req.body.To || session.calledNumber) || null;
+    // Length, transcript, language and AI cost: kept in the outbox until the platform confirms
+    let costUsd = null;
+    if (session.usage?.responses && session.costModels) {
+      costUsd = estimateCost({ ...emptyUsage(), ...session.usage }, { ...session.costModels, callSeconds: durationSeconds }).usd;
+    }
     services.platformApi
       ?.notifyCallEnd({
         callSid,
+        userId: session.platformUserId || null,
         status: callStatus,
         endedAt: new Date().toISOString(),
         durationSeconds,
         transcriptSent,
         callerNumber,
         calledNumber,
+        transcript: hasCallerSpeech(session) ? capTranscript(session.transcriptLines) : [],
+        language: session.replyLanguage || null,
+        costUsd: costUsd != null && Number.isFinite(costUsd) ? Math.round(costUsd * 10000) / 10000 : null,
+        kind: session.outbound?.kind || "inbound",
       })
-      .catch(() => {});
-    if (durationSeconds > 0 && services.platformApi?.enabled) {
+      ?.catch?.(() => {});
+    // Check-in calls don't use plan minutes: no usage report
+    if (durationSeconds > 0 && services.platformApi?.enabled && session.billingMode !== "checkin") {
       const mode = session?.billingMode;
       const userId = session?.platformUserId || null;
       // Only sync usage when we have a real platform identity or a trial number.
@@ -189,6 +248,7 @@ function createCallRoutes({ logger, callStore, services, config }) {
       if (mode === "trial" && callerNumber) {
         services.platformApi
           .trialReport({
+            callSid,
             callerNumber,
             secondsConsumed: durationSeconds,
           })
@@ -201,6 +261,7 @@ function createCallRoutes({ logger, callStore, services, config }) {
       ) {
         services.platformApi
           .reportUsage({
+            callSid,
             userId,
             callerNumber,
             secondsConsumed: durationSeconds,
@@ -210,6 +271,7 @@ function createCallRoutes({ logger, callStore, services, config }) {
       } else if (userId) {
         services.platformApi
           .reportUsage({
+            callSid,
             userId,
             callerNumber,
             secondsConsumed: durationSeconds,

@@ -11,3 +11,6 @@ frontend/.env
 
 # dev/callReplay.js output (audio, results)
 dev/replay-out/
+
+# Call reports waiting to be sent to the platform API (services/usageOutbox.js)
+data/usage-outbox.json*

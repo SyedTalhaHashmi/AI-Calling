@@ -143,7 +143,7 @@ function stubServices({ weatherDelayMs = 0, webSearch = false, fxError = false, 
 }
 
 /** Starts a call against a fake Realtime server; greeting already completed. */
-async function startCall({ routerMode, weatherDelayMs, webSearch, fxError, ratesError, flights, places, travel, logs, session, twilioClient = null, timeWarningSeconds, realtime } = {}) {
+async function startCall({ routerMode, weatherDelayMs, webSearch, fxError, ratesError, flights, places, travel, logs, session, twilioClient = null, timeWarningSeconds, realtime, platformApi = null } = {}) {
   const server = new WebSocket.Server({ port: 0 });
   await new Promise((r) => server.on("listening", r));
   const received = [];
@@ -170,6 +170,7 @@ async function startCall({ routerMode, weatherDelayMs, webSearch, fxError, rates
     ...(timeWarningSeconds ? { timeWarningSeconds } : {}),
     ...(realtime ? { realtime } : {}),
     realtimeUrl: `ws://127.0.0.1:${server.address().port}`,
+    platformApi,
   });
   const twilio = new FakeTwilio();
   handler(twilio, {});
@@ -245,6 +246,307 @@ const weatherCall = (callId, args) => ({
     assert.ok(/BTC is about/.test(r.instructions));
     assert.deepStrictEqual(r.tools, []);
     assert.deepStrictEqual(c.calls, [["crypto", "What's the price of bitcoin?"]]);
+    c.close();
+  });
+
+  // Plan limits (phase 4): a fake platform that answers the tool check
+  const fakePlatform = (data) => {
+    const sent = [];
+    const queued = [];
+    return { sent, queued, enabled: true, toolUse: async (p) => (sent.push(p), { ok: true, data }), queueToolReport: (k, p) => queued.push([k, p]) };
+  };
+
+  await check("regex mode: Basic plan asks weather: told it isn't included, no lookup", async () => {
+    const api = fakePlatform({ allowed: true });
+    const c = await startCall({ routerMode: "regex", platformApi: api, session: { platformUserId: "u1", billingMode: "subscriber_platinum", toolAccess: { mode: "none", limits: {} } } });
+    await c.say("What's the weather in Bogota?");
+    await waitFor(() => c.creates().length === 2);
+    const ins = c.creates()[1].response.instructions;
+    assert.ok(/isn't included in your plan/.test(ins), ins);
+    assert.deepStrictEqual(c.calls, [], "weather API not called");
+    c.close();
+  });
+
+  await check("regex mode: Plus at its weather limit: told the count and reset date, no lookup", async () => {
+    const api = fakePlatform({ allowed: false, reason: "limit_reached", limit: 50, resetsAt: "2026-12-10T00:00:00.000Z", canUpgrade: true });
+    const c = await startCall({ routerMode: "regex", platformApi: api, session: { platformUserId: "u1", billingMode: "subscriber_platinum", toolAccess: { mode: "limited", limits: { weather: 50 } } } });
+    await c.say("What's the weather in Bogota?");
+    await waitFor(() => c.creates().length === 2);
+    const ins = c.creates()[1].response.instructions;
+    assert.ok(/all 50 weather checks/.test(ins) && /December 10/.test(ins), ins);
+    assert.strictEqual(api.sent[0].tool, "weather");
+    assert.deepStrictEqual(c.calls, []);
+    c.close();
+  });
+
+  await check("regex mode: Plus with units left: weather answered as before", async () => {
+    const api = fakePlatform({ allowed: true, limit: 50, used: 4 });
+    const c = await startCall({ routerMode: "regex", platformApi: api, session: { platformUserId: "u1", billingMode: "subscriber_platinum", toolAccess: { mode: "limited", limits: { weather: 50 } } } });
+    await c.say("What's the weather in Bogota?");
+    await waitFor(() => c.creates().length === 2);
+    assert.ok(/18 degrees Celsius and foggy/.test(c.creates()[1].response.instructions));
+    assert.strictEqual(api.sent.length, 1);
+    assert.deepStrictEqual(api.queued, [], "nothing given back");
+    c.close();
+  });
+
+  const reminderPlatform = (answers) => {
+    const sent = [];
+    return {
+      sent,
+      enabled: true,
+      toolUse: async () => ({ ok: true, data: { allowed: true } }),
+      queueToolReport: () => {},
+      reminders: async (action, payload) => {
+        sent.push([action, payload]);
+        const a = answers[action];
+        const data = typeof a === "function" ? a() : a;
+        return data === undefined ? { ok: false } : { ok: true, data };
+      },
+    };
+  };
+  const memberSession = { platformUserId: "u1", billingMode: "subscriber_platinum", callerNumber: "+15550001111", timezone: "America/Chicago" };
+
+  await check("regex mode: 'remind me…' gets a reply with the reminder tools and the local time", async () => {
+    const api = reminderPlatform({});
+    const c = await startCall({ routerMode: "regex", platformApi: api, session: memberSession });
+    await c.say("Remind me tomorrow at 9 to take my pills.");
+    await waitFor(() => c.creates().length === 2);
+    const r = c.creates()[1].response;
+    assert.deepStrictEqual(r.tools.map((t) => t.name), ["set_reminder", "list_reminders", "cancel_reminder"]);
+    assert.ok(/America\/Chicago/.test(r.instructions), r.instructions);
+    c.close();
+  });
+
+  await check("regex mode: the model's set_reminder call is sent to the platform and the result is said", async () => {
+    const api = reminderPlatform({ set: { ok: true, say: "Okay. I'll call you Tuesday, November 17 at 9:00 AM to remind you: take my pills." } });
+    const c = await startCall({ routerMode: "regex", platformApi: api, session: memberSession });
+    await c.say("Remind me tomorrow at 9 to take my pills.");
+    await waitFor(() => c.creates().length === 2);
+    await c.completeLast([{ type: "function_call", name: "set_reminder", call_id: "rm1", arguments: JSON.stringify({ message: "take my pills", when: "2026-11-17T09:00" }) }]);
+    await waitFor(() => c.creates().length === 3);
+    assert.deepStrictEqual(api.sent[0], ["set", { userId: "u1", callSid: "CAtest", callerNumber: "+15550001111", message: "take my pills", when: "2026-11-17T09:00" }]);
+    const out = c.received.find((m) => m.type === "conversation.item.create" && m.item?.call_id === "rm1");
+    assert.ok(/Tuesday, November 17/.test(out.item.output));
+    assert.deepStrictEqual(c.creates()[2].response.tools, []);
+    c.close();
+  });
+
+  await check("regex mode: 'what time?' then '9 AM tomorrow' — the answer still reaches the reminder tools", async () => {
+    const api = reminderPlatform({});
+    const c = await startCall({ routerMode: "regex", platformApi: api, session: memberSession });
+    await c.say("Can you set a reminder for me?");
+    await waitFor(() => c.creates().length === 2);
+    await c.completeLast([]);
+    await c.say("Nine in the morning tomorrow, to call my sister.", "item-2");
+    await waitFor(() => c.creates().length === 3);
+    assert.deepStrictEqual(c.creates()[2].response.tools.map((t) => t.name), ["set_reminder", "list_reminders", "cancel_reminder"]);
+    c.close();
+  });
+
+  await check("keypad 1 after the consent question: consent saved, reminder set, Buddy says so", async () => {
+    let agreed = false;
+    const api = reminderPlatform({
+      set: () => (agreed ? { ok: true, say: "Okay. I'll call you Tuesday at 9:00 AM to remind you: pills." } : { ok: false, code: "no_consent", say: "Press 1 on your keypad to agree to reminder calls." }),
+      consent: () => ((agreed = true), { ok: true }),
+    });
+    const c = await startCall({ routerMode: "regex", platformApi: api, session: memberSession });
+    await c.say("Remind me tomorrow at 9 to take my pills.");
+    await waitFor(() => c.creates().length === 2);
+    await c.completeLast([{ type: "function_call", name: "set_reminder", call_id: "rm1", arguments: JSON.stringify({ message: "pills", when: "2026-11-17T09:00" }) }]);
+    await waitFor(() => c.creates().length === 3);
+    c.twilio.emit("message", JSON.stringify({ event: "dtmf", streamSid: "MZtest", dtmf: { track: "inbound_track", digit: "1" } }));
+    await waitFor(() => c.creates().length === 4);
+    assert.ok(/Thank you\. Okay\. I'll call you Tuesday/.test(c.creates()[3].response.instructions), c.creates()[3].response.instructions);
+    assert.deepStrictEqual(api.sent.map((x) => x[0]), ["set", "consent", "set"]);
+    c.close();
+  });
+
+  await check("free-minute caller saying 'remind me': normal reply, no reminder tools", async () => {
+    const api = reminderPlatform({});
+    const c = await startCall({ routerMode: "regex", platformApi: api, session: { billingMode: "trial" } });
+    await c.say("Remind me tomorrow at 9 to take my pills.");
+    await waitFor(() => c.creates().length === 2);
+    assert.ok(!(c.creates()[1].response.tools || []).some((t) => t.name === "set_reminder"));
+    c.close();
+  });
+
+  await check("tools mode: members get the reminder tools in the session", async () => {
+    const c = await startCall({ routerMode: "tools", platformApi: reminderPlatform({}), session: memberSession });
+    const upd = c.received.find((m) => m.type === "session.update");
+    assert.ok(upd.session.tools.some((t) => t.name === "set_reminder"));
+    c.close();
+  });
+
+  await check("tools mode: a set_reminder call goes to the platform, not the lookup services", async () => {
+    const api = reminderPlatform({ set: { ok: true, say: "Okay. I'll call you Tuesday at 9:00 AM to remind you: pills." } });
+    const c = await startCall({ routerMode: "tools", platformApi: api, session: memberSession });
+    await c.say("Remind me tomorrow at 9 to take my pills.");
+    await waitFor(() => c.creates().length === 2);
+    await c.completeLast([{ type: "function_call", name: "set_reminder", call_id: "rt1", arguments: JSON.stringify({ message: "pills", when: "2026-11-17T09:00" }) }]);
+    await waitFor(() => c.received.some((m) => m.type === "conversation.item.create" && m.item?.call_id === "rt1"));
+    assert.strictEqual(api.sent[0][0], "set");
+    assert.deepStrictEqual(c.calls, []);
+    c.close();
+  });
+
+  await check("tools mode: members get today's local date and time for reminders", async () => {
+    const c = await startCall({ routerMode: "tools", platformApi: reminderPlatform({}), session: memberSession });
+    const upd = c.received.find((m) => m.type === "session.update");
+    assert.ok(/caller's local time is \w+ \d{4}-\d{2}-\d{2}T\d{2}:\d{2} \(America\/Chicago\)/.test(upd.session.instructions), "clock line");
+    c.close();
+  });
+
+  await check("regex mode: 'remind me what the weather is in Bogota' is a weather question, not a reminder", async () => {
+    const c = await startCall({ routerMode: "regex", platformApi: reminderPlatform({}), session: memberSession });
+    await c.say("Remind me what the weather is in Bogota.");
+    await waitFor(() => c.creates().length === 2);
+    assert.ok(/18 degrees Celsius/.test(c.creates()[1].response.instructions), c.creates()[1].response.instructions);
+    c.close();
+  });
+
+  const familyPlatform = () => {
+    const sent = [];
+    return {
+      sent,
+      enabled: true,
+      toolUse: async () => ({ ok: true, data: { allowed: true } }),
+      queueToolReport: () => {},
+      reminders: async () => ({ ok: false }),
+      family: async (action, payload) => {
+        sent.push([action, payload]);
+        if (action === "consent") return { ok: true, data: { ok: true, consent: payload.agree ? "agreed" : "declined" } };
+        if (action === "sharing") return { ok: true, data: { ok: true, sharingLevel: payload.level } };
+        return { ok: true, data: { ok: true, consent: "declined" } };
+      },
+    };
+  };
+  const familySession = (consent) => ({
+    ...memberSession,
+    family: { consent, memberName: "Rosa", holderName: "Ana Lopez", time: "9:00 AM", sharingLevel: "status", language: "en" },
+  });
+
+  await check("Family Premium, member's first call: Buddy asks for consent; 'Yes' then keypad 3", async () => {
+    const api = familyPlatform();
+    const c = await startCall({ routerMode: "regex", platformApi: api, session: familySession("pending"), skipGreetingWait: true });
+    assert.ok(/Hi Rosa, I'm Buddy\. Ana Lopez set me up for you/.test(c.creates()[0].response.instructions), c.creates()[0].response.instructions);
+    await c.say("Yes, that's okay.");
+    await waitFor(() => c.creates().length === 2);
+    assert.ok(/only whether you answered, a short summary/.test(c.creates()[1].response.instructions));
+    await c.completeLast([]);
+    c.twilio.emit("message", JSON.stringify({ event: "dtmf", dtmf: { digit: "3" } }));
+    await waitFor(() => c.creates().length === 3);
+    assert.ok(/full transcripts of our calls/.test(c.creates()[2].response.instructions));
+    assert.deepStrictEqual(api.sent.map((x) => x[0]), ["consent", "sharing"]);
+    assert.strictEqual(api.sent[0][1].method, "voice");
+    assert.strictEqual(api.sent[1][1].level, "transcripts");
+    c.close();
+  });
+
+  await check("Family Premium, consent given: 'please stop my daily calls' asks to confirm", async () => {
+    const api = familyPlatform();
+    const c = await startCall({ routerMode: "regex", platformApi: api, session: familySession("agreed") });
+    assert.ok(/I'm Buddy, your AI friend/.test(c.creates()[0].response.instructions), "usual greeting");
+    await c.say("Please stop my daily calls.");
+    await waitFor(() => c.creates().length === 2);
+    assert.ok(/stop your daily check-in calls\?/.test(c.creates()[1].response.instructions));
+    c.close();
+  });
+
+  await check("Family Premium, an unrelated answer to the consent question: normal reply, question still open", async () => {
+    const api = familyPlatform();
+    const s = familySession("pending");
+    const c = await startCall({ routerMode: "regex", platformApi: api, session: s });
+    await c.say("What's the weather in Bogota?");
+    await waitFor(() => c.creates().length === 2);
+    assert.ok(/18 degrees Celsius/.test(c.creates()[1].response.instructions));
+    assert.strictEqual(c.callStore.get("CAtest").familyMenu, "consent");
+    assert.strictEqual(api.sent.length, 0);
+    c.close();
+  });
+
+  await check("check-in call: Buddy opens with the daily greeting and knows it's a 3-minute check-in", async () => {
+    const c = await startCall({ routerMode: "regex", session: { outbound: { kind: "checkin", checkinId: "k1", attempt: 1, memberName: "Rosa", language: "en", timezone: "America/Chicago" } } });
+    assert.ok(/Rosa, it's Buddy with your daily call\. How are you today\?/.test(c.creates()[0].response.instructions));
+    const upd = c.received.find((m) => m.type === "session.update");
+    assert.ok(/daily check-in call, which you placed/.test(upd.session.instructions) && /call 911/.test(upd.session.instructions));
+    c.close();
+  });
+
+  await check("reminder call: Buddy opens with the reminder, and knows it placed the call", async () => {
+    const c = await startCall({ routerMode: "regex", session: { outbound: { kind: "reminder", reminderId: "r1", attempt: 1, message: "Take your pills" } } });
+    const greet = c.creates()[0].response.instructions;
+    assert.ok(/calling with your reminder: "Take your pills"/.test(greet), greet);
+    const upd = c.received.find((m) => m.type === "session.update");
+    assert.ok(/You placed this call/.test(upd.session.instructions));
+    c.close();
+  });
+
+  await check("inbound call: the usual greeting", async () => {
+    const c = await startCall({ routerMode: "regex" });
+    assert.ok(/I'm Buddy, your AI friend/.test(c.creates()[0].response.instructions));
+    c.close();
+  });
+
+  await check("regex mode: two cities, the second refused: the first city's unit is given back", async () => {
+    let n = 0;
+    const api = {
+      sent: [],
+      queued: [],
+      enabled: true,
+      toolUse: async (p) => {
+        api.sent.push(p);
+        n += 1;
+        return n === 1
+          ? { ok: true, data: { allowed: true } }
+          : { ok: true, data: { allowed: false, reason: "limit_reached", limit: 50, resetsAt: "2026-12-10T00:00:00.000Z" } };
+      },
+      queueToolReport: (k, p) => api.queued.push([k, p]),
+    };
+    const c = await startCall({ routerMode: "regex", platformApi: api, session: { platformUserId: "u1", billingMode: "subscriber_platinum", toolAccess: { mode: "limited", limits: { weather: 50 } } } });
+    await c.say("Is it hot in Miami or Orlando?");
+    await waitFor(() => c.creates().length === 2);
+    await waitFor(() => api.queued.length === 1);
+    assert.strictEqual(api.queued[0][0], "tool-release");
+    assert.strictEqual(api.queued[0][1].key, api.sent[0].key);
+    assert.ok(/all 50 weather checks/.test(c.creates()[1].response.instructions));
+    c.close();
+  });
+
+  await check("regex mode: web search at its limit: the refusal is the only answer, no search", async () => {
+    const api = fakePlatform({ allowed: false, reason: "limit_reached", limit: 20, resetsAt: "2026-12-10T00:00:00.000Z", canUpgrade: true });
+    const c = await startCall({ routerMode: "regex", webSearch: true, platformApi: api, session: { platformUserId: "u1", billingMode: "subscriber_platinum", toolAccess: { mode: "limited", limits: { research: 20 } } } });
+    await c.say("Search the web for the price of gas in Miami today.");
+    await waitFor(() => c.creates().length === 2);
+    await sleep(50);
+    assert.strictEqual(c.creates().length, 2, "one reply only");
+    const ins = c.creates()[1].response.instructions;
+    assert.ok(/all 20 internet searches/.test(ins) && /upgrade/.test(ins), ins);
+    assert.ok(!/Google/.test(ins), ins);
+    assert.deepStrictEqual(c.calls, []);
+    c.close();
+  });
+
+  await check("regex mode: a refusal to a Spanish caller is translated in full", async () => {
+    const api = fakePlatform({ allowed: true });
+    const c = await startCall({ routerMode: "regex", platformApi: api, session: { replyLanguage: "es", platformUserId: "u1", billingMode: "subscriber_platinum", toolAccess: { mode: "none", limits: {} } } });
+    await c.say("What's the weather in Bogota?");
+    await waitFor(() => c.creates().length === 2);
+    const ins = c.creates()[1].response.instructions;
+    assert.ok(/Say this in Spanish/.test(ins) && /isn't included in your plan/.test(ins), ins);
+    c.close();
+  });
+
+  await check("tools mode: a refused tool returns the refusal to the model, the service isn't called", async () => {
+    const api = fakePlatform({ allowed: false, reason: "not_in_plan", canUpgrade: true });
+    const c = await startCall({ routerMode: "tools", platformApi: api, session: { platformUserId: "u1", billingMode: "subscriber_platinum", toolAccess: { mode: "check", limits: {} } } });
+    await c.say("What's the weather in Bogota?");
+    await waitFor(() => c.creates().length === 2);
+    await c.completeLast([weatherCall("w1", { city: "Bogota" })]);
+    await waitFor(() => c.received.some((m) => m.type === "conversation.item.create" && m.item?.call_id === "w1"));
+    const out = c.received.find((m) => m.type === "conversation.item.create" && m.item?.call_id === "w1");
+    assert.ok(/isn't included in your plan/.test(out.item.output), out.item.output);
+    assert.deepStrictEqual(c.calls, []);
     c.close();
   });
 

@@ -72,6 +72,7 @@ function createCallRoutes({ logger, callStore, services, config }) {
       session.platformUserId = null;
       session.maxBillableSeconds = null;
       session.toolAccess = undefined;
+      session.family = null;
 
       const check = await services.platformApi?.callerCheck?.({
         callerNumber: session.callerNumber,
@@ -93,6 +94,10 @@ function createCallRoutes({ logger, callStore, services, config }) {
         session.platformUserId = check.userId || null;
         // Which live tools this call may use (plan and monthly limits); absent = all on
         session.toolAccess = check.tools || undefined;
+        // Reminders and Family Premium: time zone, consent, the member's check-in details
+        session.timezone = check.timezone;
+        session.reminderConsent = check.reminderConsent;
+        session.family = check.family || null;
         if (check.transcriptEmail && String(check.transcriptEmail).trim()) {
           session.transcriptEmailTo = String(check.transcriptEmail).trim();
         }
@@ -162,10 +167,17 @@ function createCallRoutes({ logger, callStore, services, config }) {
       return res.status(200).send("ok");
     }
 
-    // A reminder call: the platform learns how this try went (retry, done or email)
+    // A reminder or check-in call: the platform learns how this try went
     if (session.outbound?.kind === "reminder") {
       services.platformApi?.reportReminderResult?.({
         reminderId: session.outbound.reminderId,
+        attempt: session.outbound.attempt,
+        outcome: reminderOutcome(session, callStatus),
+        callSid,
+      });
+    } else if (session.outbound?.kind === "checkin") {
+      services.platformApi?.reportCheckinResult?.({
+        checkinId: session.outbound.checkinId,
         attempt: session.outbound.attempt,
         outcome: reminderOutcome(session, callStatus),
         callSid,
@@ -217,9 +229,11 @@ function createCallRoutes({ logger, callStore, services, config }) {
         transcript: hasCallerSpeech(session) ? capTranscript(session.transcriptLines) : [],
         language: session.replyLanguage || null,
         costUsd: costUsd != null && Number.isFinite(costUsd) ? Math.round(costUsd * 10000) / 10000 : null,
+        kind: session.outbound?.kind || "inbound",
       })
       ?.catch?.(() => {});
-    if (durationSeconds > 0 && services.platformApi?.enabled) {
+    // Check-in calls don't use plan minutes: no usage report
+    if (durationSeconds > 0 && services.platformApi?.enabled && session.billingMode !== "checkin") {
       const mode = session?.billingMode;
       const userId = session?.platformUserId || null;
       // Only sync usage when we have a real platform identity or a trial number.

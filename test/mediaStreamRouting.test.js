@@ -405,6 +405,74 @@ const weatherCall = (callId, args) => ({
     c.close();
   });
 
+  const familyPlatform = () => {
+    const sent = [];
+    return {
+      sent,
+      enabled: true,
+      toolUse: async () => ({ ok: true, data: { allowed: true } }),
+      queueToolReport: () => {},
+      reminders: async () => ({ ok: false }),
+      family: async (action, payload) => {
+        sent.push([action, payload]);
+        if (action === "consent") return { ok: true, data: { ok: true, consent: payload.agree ? "agreed" : "declined" } };
+        if (action === "sharing") return { ok: true, data: { ok: true, sharingLevel: payload.level } };
+        return { ok: true, data: { ok: true, consent: "declined" } };
+      },
+    };
+  };
+  const familySession = (consent) => ({
+    ...memberSession,
+    family: { consent, memberName: "Rosa", holderName: "Ana Lopez", time: "9:00 AM", sharingLevel: "status", language: "en" },
+  });
+
+  await check("Family Premium, member's first call: Buddy asks for consent; 'Yes' then keypad 3", async () => {
+    const api = familyPlatform();
+    const c = await startCall({ routerMode: "regex", platformApi: api, session: familySession("pending"), skipGreetingWait: true });
+    assert.ok(/Hi Rosa, I'm Buddy\. Ana Lopez set me up for you/.test(c.creates()[0].response.instructions), c.creates()[0].response.instructions);
+    await c.say("Yes, that's okay.");
+    await waitFor(() => c.creates().length === 2);
+    assert.ok(/only whether you answered, a short summary/.test(c.creates()[1].response.instructions));
+    await c.completeLast([]);
+    c.twilio.emit("message", JSON.stringify({ event: "dtmf", dtmf: { digit: "3" } }));
+    await waitFor(() => c.creates().length === 3);
+    assert.ok(/full transcripts of our calls/.test(c.creates()[2].response.instructions));
+    assert.deepStrictEqual(api.sent.map((x) => x[0]), ["consent", "sharing"]);
+    assert.strictEqual(api.sent[0][1].method, "voice");
+    assert.strictEqual(api.sent[1][1].level, "transcripts");
+    c.close();
+  });
+
+  await check("Family Premium, consent given: 'please stop my daily calls' asks to confirm", async () => {
+    const api = familyPlatform();
+    const c = await startCall({ routerMode: "regex", platformApi: api, session: familySession("agreed") });
+    assert.ok(/I'm Buddy, your AI friend/.test(c.creates()[0].response.instructions), "usual greeting");
+    await c.say("Please stop my daily calls.");
+    await waitFor(() => c.creates().length === 2);
+    assert.ok(/stop your daily check-in calls\?/.test(c.creates()[1].response.instructions));
+    c.close();
+  });
+
+  await check("Family Premium, an unrelated answer to the consent question: normal reply, question still open", async () => {
+    const api = familyPlatform();
+    const s = familySession("pending");
+    const c = await startCall({ routerMode: "regex", platformApi: api, session: s });
+    await c.say("What's the weather in Bogota?");
+    await waitFor(() => c.creates().length === 2);
+    assert.ok(/18 degrees Celsius/.test(c.creates()[1].response.instructions));
+    assert.strictEqual(c.callStore.get("CAtest").familyMenu, "consent");
+    assert.strictEqual(api.sent.length, 0);
+    c.close();
+  });
+
+  await check("check-in call: Buddy opens with the daily greeting and knows it's a 3-minute check-in", async () => {
+    const c = await startCall({ routerMode: "regex", session: { outbound: { kind: "checkin", checkinId: "k1", attempt: 1, memberName: "Rosa", language: "en", timezone: "America/Chicago" } } });
+    assert.ok(/Rosa, it's Buddy with your daily call\. How are you today\?/.test(c.creates()[0].response.instructions));
+    const upd = c.received.find((m) => m.type === "session.update");
+    assert.ok(/daily check-in call, which you placed/.test(upd.session.instructions) && /call 911/.test(upd.session.instructions));
+    c.close();
+  });
+
   await check("reminder call: Buddy opens with the reminder, and knows it placed the call", async () => {
     const c = await startCall({ routerMode: "regex", session: { outbound: { kind: "reminder", reminderId: "r1", attempt: 1, message: "Take your pills" } } });
     const greet = c.creates()[0].response.instructions;

@@ -39,6 +39,8 @@ const config = {
   },
   /** Longest reminder call, in seconds (plan minutes still apply). */
   reminderCallMaxSeconds: positiveInt(env("REMINDER_CALL_MAX_SECONDS")) || 300,
+  /** Longest Family Premium check-in call, in seconds (not billed). */
+  checkinCallMaxSeconds: positiveInt(env("CHECKIN_CALL_MAX_SECONDS")) || 180,
   openai: {
     apiKey: required("OPENAI_API_KEY"),
   },

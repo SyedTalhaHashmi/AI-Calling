@@ -42,6 +42,9 @@ function createPlatformApi(config, logger) {
           if (kind === "call-end") {
             return post("/api/v1/integrations/voice/call-end", payload, { "x-integration-secret": integrationSecret }, 15000);
           }
+          if (kind === "checkin-result") {
+            return post("/api/v1/integrations/voice/checkin-result", payload, { "x-integration-secret": integrationSecret }, 10000);
+          }
           if (kind === "reminder-result") {
             return post("/api/v1/integrations/voice/reminder-result", payload, { "x-integration-secret": integrationSecret }, 10000);
           }
@@ -134,6 +137,26 @@ function createPlatformApi(config, logger) {
     reportReminderResult(payload) {
       if (!outbox) return;
       outbox.enqueue("reminder-result", payload, `reminder:${payload.reminderId}:${payload.attempt}`).catch(() => {});
+    },
+    /** How one check-in call try went: through the outbox, once per try. */
+    reportCheckinResult(payload) {
+      if (!outbox) return;
+      outbox.enqueue("checkin-result", payload, `checkin:${payload.checkinId}:${payload.attempt}`).catch(() => {});
+    },
+    /** Family Premium on a call: the member's yes/no, sharing choice, or stopping the daily calls. */
+    async family(action, payload) {
+      if (!enabled) return { ok: false, skipped: true };
+      const path = {
+        consent: "/api/v1/integrations/voice/family-consent",
+        sharing: "/api/v1/integrations/voice/family-sharing",
+        withdraw: "/api/v1/integrations/voice/family-withdraw",
+      }[action];
+      try {
+        const { data } = await http.post(path, payload, { headers: { "x-integration-secret": integrationSecret }, timeout: 5000 });
+        return { ok: true, data };
+      } catch (err) {
+        return { ok: false, error: err.message, status: err.response?.status };
+      }
     },
     /** Reminder tools on a call (set, list, cancel) and the keypad consent: answers needed now. */
     async reminders(action, payload) {

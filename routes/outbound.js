@@ -28,11 +28,16 @@ function createOutboundRoutes({ logger, callStore, config, twilioClient, platfor
 
   router.post("/internal/outbound/reminder", async (req, res) => {
     if (!secret || !sameSecret(req.get("x-integration-secret"), secret)) return res.status(401).json({ error: "Unauthorized" });
-    const { reminderId, attempt, to, userId, message } = req.body || {};
-    if (!reminderId || !to || !userId || !message) return res.status(400).json({ error: "reminderId, to, userId and message are required" });
+    // kind "reminder" (default) or "checkin" (Family Premium daily call: not billed, 3 minutes)
+    const kind = req.body?.kind === "checkin" ? "checkin" : "reminder";
+    const { reminderId, checkinId, attempt, to, userId, message, memberName, language } = req.body || {};
+    const jobId = kind === "checkin" ? checkinId : reminderId;
+    if (!jobId || !to || !userId || (kind === "reminder" && !message)) {
+      return res.status(400).json({ error: "an id, to, userId (and message for reminders) are required" });
+    }
     if (!config.publicBaseUrl) return res.status(503).json({ error: "PUBLIC_BASE_URL not set", notDialed: true });
 
-    const tryKey = `${reminderId}:${Number(attempt) || 1}`;
+    const tryKey = `${kind}:${jobId}:${Number(attempt) || 1}`;
     const earlier = placed.get(tryKey);
     if (earlier) {
       const callSid = await earlier;
@@ -46,7 +51,7 @@ function createOutboundRoutes({ logger, callStore, config, twilioClient, platfor
       return res.status(503).json({ error: "Account check unavailable", notDialed: true });
     }
     if (!check?.allowed || check.mode === "trial" || check.mode === "test" || check.userId !== userId) {
-      logger.info({ reminderId, mode: check?.mode }, "Reminder call not placed: account can't take calls now");
+      logger.info({ kind, jobId, mode: check?.mode }, "Outbound call not placed: account can't take calls now");
       return res.json({ ok: false, skipped: "no_access" });
     }
 
@@ -69,30 +74,34 @@ function createOutboundRoutes({ logger, callStore, config, twilioClient, platfor
     } catch (err) {
       placed.delete(tryKey);
       settle(null);
-      logger.error({ reminderId, err: err.message }, "Reminder call could not be placed");
+      logger.error({ kind, jobId, err: err.message }, "Outbound call could not be placed");
       // Twilio refused it: nothing is ringing, so the platform may try again
       return res.status(502).json({ error: err.message, notDialed: true });
     }
     settle(call.sid);
     setTimeout(() => placed.delete(tryKey), 2 * 60 * 60 * 1000).unref?.();
 
-    const cap = Math.max(30, Number(config.reminderCallMaxSeconds) || 300);
-    const left = check.mode === "subscriber" && check.secondsRemaining > 0 ? check.secondsRemaining : null;
-    const platformCap = check.maxSecondsThisCall > 0 ? check.maxSecondsThisCall : null;
+    const checkin = kind === "checkin";
+    // Check-ins don't use plan minutes: only their own 3-minute cap applies
+    const cap = checkin ? Math.max(30, Number(config.checkinCallMaxSeconds) || 180) : Math.max(30, Number(config.reminderCallMaxSeconds) || 300);
+    const left = !checkin && check.mode === "subscriber" && check.secondsRemaining > 0 ? check.secondsRemaining : null;
+    const platformCap = !checkin && check.maxSecondsThisCall > 0 ? check.maxSecondsThisCall : null;
     const session = callStore.getOrCreate(call.sid);
     Object.assign(session, {
       callerNumber: to,
       calledNumber: config.twilio.outboundCallerId || config.twilio.phoneNumber,
-      billingMode: check.mode,
+      billingMode: checkin ? "checkin" : check.mode,
       platformUserId: check.userId,
       toolAccess: check.tools || undefined,
       timezone: check.timezone,
       reminderConsent: check.reminderConsent,
       maxBillableSeconds: Math.min(...[cap, left, platformCap].filter((n) => n != null)),
-      outbound: { kind: "reminder", reminderId, attempt: Number(attempt) || 1, message: String(message).slice(0, 200) },
+      outbound: checkin
+        ? { kind: "checkin", checkinId, attempt: Number(attempt) || 1, memberName: String(memberName || "").slice(0, 60), language: language === "es" ? "es" : "en", timezone: check.timezone }
+        : { kind: "reminder", reminderId, attempt: Number(attempt) || 1, message: String(message).slice(0, 200) },
     });
     if (check.transcriptEmail) session.transcriptEmailTo = String(check.transcriptEmail).trim();
-    logger.info({ callSid: call.sid, reminderId, attempt }, "Reminder call placed");
+    logger.info({ callSid: call.sid, kind, jobId, attempt }, "Outbound call placed");
     return res.json({ ok: true, callSid: call.sid });
   });
 
@@ -122,7 +131,13 @@ function createOutboundRoutes({ logger, callStore, config, twilioClient, platfor
     const answeredBy = String(req.body.AnsweredBy || "unknown");
     if (MACHINE.test(answeredBy)) {
       session.outbound.outcome = "voicemail";
-      twiml.say({ voice: "alice" }, `Hi, this is Buddy from Buddy Call A I with your reminder: ${session.outbound.message}. Goodbye.`);
+      const spoken =
+        session.outbound.kind === "checkin"
+          ? session.outbound.language === "es"
+            ? `Hola ${session.outbound.memberName}, soy Buddy con tu llamada de hoy. Te llamaré de nuevo pronto. Adiós.`
+            : `Hi ${session.outbound.memberName}, it's Buddy with your daily call. I'll try you again soon. Goodbye.`
+          : `Hi, this is Buddy from Buddy Call A I with your reminder: ${session.outbound.message}. Goodbye.`;
+      twiml.say(session.outbound.language === "es" ? { voice: "alice", language: "es-US" } : { voice: "alice" }, spoken);
       twiml.hangup();
       logger.info({ callSid, answeredBy }, "Reminder left on voicemail");
       return res.type("text/xml").send(twiml.toString());

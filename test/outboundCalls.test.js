@@ -29,6 +29,7 @@ const MEMBER = "+15550003333";
 async function start({ callerCheck, twilioFails = false } = {}) {
   const dialed = [];
   const results = [];
+  const checkins = [];
   const usage = [];
   const callStore = new CallStore();
   const config = {
@@ -46,6 +47,7 @@ async function start({ callerCheck, twilioFails = false } = {}) {
     reportUsage: async (p) => (usage.push(p), { ok: true }),
     trialReport: async () => ({ ok: true }),
     reportReminderResult: (p) => results.push(p),
+    reportCheckinResult: (p) => checkins.push(p),
   };
   const twilioClient = {
     calls: Object.assign((sid) => ({ fetch: async () => ({ sid, status: "completed" }) }), {
@@ -75,7 +77,7 @@ async function start({ callerCheck, twilioFails = false } = {}) {
     server.closeAllConnections();
     server.close();
   };
-  return { dialed, results, usage, callStore, json, form, get, close };
+  return { dialed, results, checkins, usage, callStore, json, form, get, close };
 }
 
 const member = { allowed: true, mode: "subscriber_platinum", userId: "u1", secondsRemaining: 3000, tools: { mode: "limited", limits: { weather: 50 } }, timezone: "America/Chicago", reminderConsent: true, transcriptEmail: "m@example.test" };
@@ -153,6 +155,37 @@ const job = { reminderId: "r1", attempt: 1, to: MEMBER, userId: "u1", message: "
     assert.deepStrictEqual(ok, { status: 200, body: { status: "completed" } });
     assert.strictEqual((await t.get(`/internal/outbound/status?callSid=${sid}`, "nope")).status, 401);
     assert.strictEqual((await t.get("/internal/outbound/status?callSid=bad")).status, 400);
+    t.close();
+  });
+
+  await check("check-in call: not billed, 3-minute cap, outcome reported as a check-in, no minutes used", async () => {
+    const results = [];
+    const t = await start({ callerCheck: { ...member, mode: "subscriber", secondsRemaining: 60 } });
+    const r = await t.json("/internal/outbound/reminder", { kind: "checkin", checkinId: "k1", attempt: 2, to: MEMBER, userId: "u1", memberName: "Rosa", language: "en" });
+    assert.strictEqual(r.body.ok, true);
+    const s = t.callStore.get("CAout1");
+    assert.strictEqual(s.billingMode, "checkin");
+    assert.strictEqual(s.maxBillableSeconds, 180, "not limited by the 60 s of plan minutes left");
+    assert.strictEqual(s.outbound.kind, "checkin");
+    assert.strictEqual(s.outbound.memberName, "Rosa");
+    await t.form("/outbound-answer", { CallSid: "CAout1", AnsweredBy: "human" });
+    await t.form("/call-status", { CallSid: "CAout1", CallStatus: "completed", CallDuration: "170" });
+    await new Promise((res) => setTimeout(res, 20));
+    assert.deepStrictEqual(t.checkins, [{ checkinId: "k1", attempt: 2, outcome: "answered", callSid: "CAout1" }]);
+    assert.deepStrictEqual(t.results, [], "not a reminder result");
+    assert.deepStrictEqual(t.usage, [], "check-ins don't use plan minutes");
+    void results;
+    t.close();
+  });
+
+  await check("check-in to voicemail: a short message, counted as not answered", async () => {
+    const t = await start({ callerCheck: member });
+    await t.json("/internal/outbound/reminder", { kind: "checkin", checkinId: "k2", attempt: 1, to: MEMBER, userId: "u1", memberName: "Rosa" });
+    const xml = await t.form("/outbound-answer", { CallSid: "CAout1", AnsweredBy: "machine_end_beep" });
+    assert.ok(/Hi Rosa, it's Buddy with your daily call/.test(xml));
+    await t.form("/call-status", { CallSid: "CAout1", CallStatus: "completed", CallDuration: "12" });
+    await new Promise((res) => setTimeout(res, 20));
+    assert.strictEqual(t.checkins[0].outcome, "voicemail");
     t.close();
   });
 

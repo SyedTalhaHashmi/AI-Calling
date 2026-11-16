@@ -1,0 +1,159 @@
+/**
+ * Family Premium on a call from the member's line:
+ *  - first call: Buddy asks for consent to daily check-in calls (keypad 1 / 2, or yes / no),
+ *    then what relatives may see (1 status, 2 summaries, 3 transcripts);
+ *  - later: "stop my daily calls" or "change what my family sees".
+ * The platform records every answer; this module only runs the little menu.
+ */
+
+const SHARING = { 1: "status", 2: "summaries", 3: "transcripts" };
+
+const TEXT = {
+  en: {
+    consent: (f) =>
+      `Hi ${f.memberName}, I'm Buddy.${f.holderName ? ` ${f.holderName} set me up for you.` : ""} If it's OK with you, I'll call you every day at ${f.time} to say hello, and call you for your reminders. These calls are made by an AI assistant and are transcribed. Is that OK? Say yes or no, or press 1 for yes and 2 for no.`,
+    sharing:
+      "Thank you! Would you like your family to see only whether you answered, a short summary of our calls, or the full transcripts? Press 1 for only whether you answered, 2 for summaries, or 3 for full transcripts. You can change this any time.",
+    declined: "Okay, I won't call you. You can still call me any time, and if you change your mind, just tell me.",
+    shared: { status: "Got it. Your family will only see whether you answered.", summaries: "Got it. Your family will see short summaries of our calls.", transcripts: "Got it. Your family will see the full transcripts of our calls." },
+    withdrawAsk: "Do you want me to stop your daily check-in calls? Press 1 or say yes to stop them, or press 2 to keep them.",
+    withdrawn: "Okay, I've stopped your daily check-in calls. Your family will be told. You can call me any time.",
+    kept: "Okay, I'll keep calling you every day.",
+    error: "Sorry, I couldn't save that right now. Please try again in a minute.",
+  },
+  es: {
+    consent: (f) =>
+      `Hola ${f.memberName}, soy Buddy.${f.holderName ? ` ${f.holderName} me configuró para ti.` : ""} Si te parece bien, te llamaré todos los días a las ${f.time} para saludarte, y también para tus recordatorios. Estas llamadas las hace un asistente de inteligencia artificial y se transcriben. ¿Te parece bien? Di sí o no, o marca 1 para sí y 2 para no.`,
+    sharing:
+      "¡Gracias! ¿Quieres que tu familia vea solo si contestaste, un breve resumen de nuestras llamadas, o las transcripciones completas? Marca 1 para solo si contestaste, 2 para resúmenes, o 3 para transcripciones completas. Puedes cambiarlo cuando quieras.",
+    declined: "Está bien, no te llamaré. Puedes llamarme cuando quieras, y si cambias de opinión, solo dímelo.",
+    shared: { status: "Entendido. Tu familia solo verá si contestaste.", summaries: "Entendido. Tu familia verá breves resúmenes de nuestras llamadas.", transcripts: "Entendido. Tu familia verá las transcripciones completas." },
+    withdrawAsk: "¿Quieres que deje de hacer tus llamadas diarias? Marca 1 o di sí para dejarlas, o marca 2 para seguir.",
+    withdrawn: "Listo, dejé de hacer tus llamadas diarias. Le avisaremos a tu familia. Puedes llamarme cuando quieras.",
+    kept: "Está bien, te seguiré llamando todos los días.",
+    error: "Lo siento, no pude guardarlo ahora. Inténtalo de nuevo en un minuto.",
+  },
+};
+
+const YES = /^(?:yes|yeah|yep|sure|ok(?:ay)?|of course|that's (?:ok|fine)|s[ií]|claro|est[aá] bien|de acuerdo|vale)(?=[\s,.!?]|$)/i;
+const NO = /^(?:no|nope|no thanks|not really|no gracias)(?=[\s,.!?]|$)/i;
+const STOP_CALLS = /\b(?:stop|cancel|don'?t want)\b.*\b(?:daily|check-?in|morning)\s+calls?\b|\b(?:deja|cancela)\b.*\bllamadas? diarias?\b/i;
+const CHANGE_SHARING = /\b(?:what|change)\b.*\b(?:my )?(?:family|relatives?|kids|children|son|daughter)\b.*\b(?:see|sees|share)\b|\bqu[eé] ve mi familia\b/i;
+
+function sharingFromSpeech(t) {
+  if (/transcript|everything|all of it|full|transcripci/i.test(t)) return "transcripts";
+  if (/summar|resumen/i.test(t)) return "summaries";
+  if (/only whether|just whether|status|answered|nothing|solo si/i.test(t)) return "status";
+  return null;
+}
+
+function createFamilyMenu({ platformApi, session, callSid, logger }) {
+  const lang = () => (session?.family?.language === "es" || session?.replyLanguage === "es" ? "es" : "en");
+  const t = () => TEXT[lang()];
+  const active = () => Boolean(platformApi?.enabled && session?.family && session?.platformUserId);
+
+  async function send(action, payload) {
+    const out = await platformApi.family(action, { userId: session.platformUserId, callerNumber: session.callerNumber, callSid, ...payload });
+    if (!out?.ok) logger.warn({ callSid, action, err: out?.error }, "Family request failed");
+    return out?.ok ? out.data : null;
+  }
+
+  /** The opening line on the member's first call (consent still pending), else null. */
+  function openingLine() {
+    if (!active() || session.family.consent !== "pending" || session.outbound) return null;
+    session.familyMenu = "consent";
+    return t().consent(session.family);
+  }
+
+  async function answer(choice, method) {
+    const menu = session.familyMenu;
+    if (menu === "consent") {
+      if (choice !== "yes" && choice !== "no") return null;
+      session.familyMenu = null;
+      const out = await send("consent", { agree: choice === "yes", method });
+      if (!out) return t().error;
+      session.family.consent = out.consent;
+      if (choice === "no") return t().declined;
+      session.reminderConsent = true;
+      session.familyMenu = "sharing";
+      return t().sharing;
+    }
+    if (menu === "sharing") {
+      if (!["status", "summaries", "transcripts"].includes(choice)) return null;
+      session.familyMenu = null;
+      const out = await send("sharing", { level: choice });
+      if (!out) return t().error;
+      session.family.sharingLevel = choice;
+      return t().shared[choice];
+    }
+    if (menu === "withdraw") {
+      if (choice !== "yes" && choice !== "no") return null;
+      session.familyMenu = null;
+      if (choice === "no") return t().kept;
+      const out = await send("withdraw", {});
+      if (!out) return t().error;
+      session.family.consent = "declined";
+      return t().withdrawn;
+    }
+    return null;
+  }
+
+  /** A keypad press. What Buddy says, or null when it means nothing here. */
+  async function handleDigit(digit) {
+    if (!active() || !session.familyMenu) return null;
+    if (session.familyMenu === "sharing") return answer(SHARING[digit] || null, "keypad");
+    return answer(digit === "1" ? "yes" : digit === "2" ? "no" : null, "keypad");
+  }
+
+  /** The caller's words. What Buddy says, or null to let the call go on as usual. */
+  async function handleSpeech(text) {
+    if (!active()) return null;
+    const said = String(text || "").trim();
+    if (session.familyMenu === "sharing") {
+      const level = sharingFromSpeech(said);
+      return level ? answer(level, "voice") : null;
+    }
+    if (session.familyMenu === "consent" || session.familyMenu === "withdraw") {
+      const choice = YES.test(said) ? "yes" : NO.test(said) ? "no" : null;
+      return choice ? answer(choice, "voice") : null;
+    }
+    if (session.family.consent === "agreed" && STOP_CALLS.test(said)) {
+      session.familyMenu = "withdraw";
+      return t().withdrawAsk;
+    }
+    if (session.family.consent === "agreed" && CHANGE_SHARING.test(said)) {
+      session.familyMenu = "sharing";
+      return t().sharing.replace(/^(Thank you! |¡Gracias! )/, "");
+    }
+    return null;
+  }
+
+  /** Whether these words are for the menu (checked before the usual answers). */
+  function wants(text) {
+    if (!active()) return false;
+    if (session.familyMenu) return true;
+    const said = String(text || "");
+    return session.family.consent === "agreed" && (STOP_CALLS.test(said) || CHANGE_SHARING.test(said));
+  }
+
+  return { openingLine, handleDigit, handleSpeech, wants, isOpen: () => Boolean(session?.familyMenu) };
+}
+
+/** Opening line of a check-in call Buddy placed. */
+function checkinOpening(outbound, now = new Date()) {
+  let hour = 9;
+  try {
+    hour = Number(new Intl.DateTimeFormat("en-US", { timeZone: outbound.timezone || "America/New_York", hour: "numeric", hourCycle: "h23" }).format(now));
+  } catch {
+    /* default */
+  }
+  const name = outbound.memberName ? ` ${outbound.memberName}` : "";
+  if (outbound.language === "es") {
+    const g = hour < 12 ? "Buenos días" : hour < 19 ? "Buenas tardes" : "Buenas noches";
+    return `${g}${name}, soy Buddy con tu llamada de hoy. ¿Cómo estás?`;
+  }
+  const g = hour < 12 ? "Good morning" : hour < 18 ? "Good afternoon" : "Good evening";
+  return `${g}${name}, it's Buddy with your daily call. How are you today?`;
+}
+
+module.exports = { createFamilyMenu, checkinOpening, TEXT };

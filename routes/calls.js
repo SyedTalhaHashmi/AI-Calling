@@ -73,6 +73,7 @@ function createCallRoutes({ logger, callStore, services, config }) {
       session.maxBillableSeconds = null;
       session.toolAccess = undefined;
       session.family = null;
+      session.transcriptDelivery = "transcript";
 
       const check = await services.platformApi?.callerCheck?.({
         callerNumber: session.callerNumber,
@@ -98,6 +99,8 @@ function createCallRoutes({ logger, callStore, services, config }) {
         session.timezone = check.timezone;
         session.reminderConsent = check.reminderConsent;
         session.family = check.family || null;
+        // Gift accounts: the after-call email follows the member's sharing choice
+        session.transcriptDelivery = check.transcriptDelivery || "transcript";
         if (check.transcriptEmail && String(check.transcriptEmail).trim()) {
           session.transcriptEmailTo = String(check.transcriptEmail).trim();
         }
@@ -186,7 +189,11 @@ function createCallRoutes({ logger, callStore, services, config }) {
 
     let transcriptSent = false;
     // Blocked callers and hang-ups before speaking left "No conversation captured." emails
-    if (!hasCallerSpeech(session)) {
+    if (session.transcriptDelivery === "none" || session.transcriptDelivery === "summary") {
+      // The member shares only whether they answered (none) or summaries (sent by the
+      // platform once written): no transcript email for this call
+      logger.info({ callSid, delivery: session.transcriptDelivery }, "Transcript not emailed: the member's sharing choice");
+    } else if (!hasCallerSpeech(session)) {
       logger.info({ callSid, callStatus }, "Transcript not sent: caller never spoke");
     } else {
       try {

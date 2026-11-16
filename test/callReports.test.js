@@ -26,6 +26,7 @@ async function start(callerCheck) {
   const usage = [];
   const trials = [];
   const ends = [];
+  const sentTranscripts = [];
   const callStore = new CallStore();
   const app = express();
   app.use(express.urlencoded({ extended: false }));
@@ -35,7 +36,7 @@ async function start(callerCheck) {
       callStore,
       config: { publicBaseUrl: "https://example.test", ringDelaySeconds: 0 },
       services: {
-        email: { sendTranscript: async () => {} },
+        email: { sendTranscript: async (p) => sentTranscripts.push(p) },
         platformApi: {
           enabled: true,
           callerCheck: async () => callerCheck,
@@ -60,7 +61,7 @@ async function start(callerCheck) {
     server.closeAllConnections();
     server.close();
   };
-  return { usage, trials, ends, callStore, post, close };
+  return { usage, trials, ends, sentTranscripts, callStore, post, close };
 }
 
 (async () => {
@@ -149,6 +150,22 @@ async function start(callerCheck) {
     assert.ok(JSON.stringify(t.ends[0].transcript).length <= 200 * 1024);
     assert.ok(t.ends[0].transcript.length > 100);
     t.close();
+  });
+
+  await check("gift account, member shares only status or summaries: no transcript email; everything else unchanged", async () => {
+    for (const [delivery, expected] of [["none", 0], ["summary", 0], ["transcript", 1], [undefined, 1]]) {
+      const emails = [];
+      const t = await start({ allowed: true, mode: "subscriber", userId: "u9", secondsRemaining: 600, ...(delivery ? { transcriptDelivery: delivery } : {}) });
+      t.emailOverride = emails;
+      await t.post("/incoming-call", { CallSid: `CAD${delivery}`, From: "+15550001119", To: "+15550002222" });
+      t.callStore.get(`CAD${delivery}`).transcriptLines = ["AI: Hi.", "Caller: Hello there."];
+      await t.post("/call-status", { CallSid: `CAD${delivery}`, CallStatus: "completed", CallDuration: "30" });
+      await new Promise((r) => setTimeout(r, 20));
+      assert.strictEqual(t.sentTranscripts.length, expected, String(delivery));
+      assert.strictEqual(t.ends[0].transcript.length, 2, "the platform still gets the transcript (stored encrypted)");
+      assert.strictEqual(t.usage.length, 1, "minutes still reported");
+      t.close();
+    }
   });
 
   console.log(`\n${passed} passed`);

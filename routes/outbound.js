@@ -101,6 +101,7 @@ function createOutboundRoutes({ logger, callStore, config, twilioClient, platfor
         : { kind: "reminder", reminderId, attempt: Number(attempt) || 1, message: String(message).slice(0, 200) },
     });
     if (check.transcriptEmail) session.transcriptEmailTo = String(check.transcriptEmail).trim();
+    session.transcriptDelivery = check.transcriptDelivery || "transcript";
     logger.info({ callSid: call.sid, kind, jobId, attempt }, "Outbound call placed");
     return res.json({ ok: true, callSid: call.sid });
   });
